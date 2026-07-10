@@ -129,10 +129,14 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 
 		size, modtime := "", ""
 		info, err := e.Info()
+		name := e.Name()
 
 		if err == nil {
 			size = fmt.Sprintf("%010d", info.Size())
 			modtime = info.ModTime().Format("2006-01-02 15:04:05")
+			if info.IsDir() {
+				name += "/"
+			}
 		}
 
 		bw.WriteString(fmt.Sprintf(
@@ -146,7 +150,7 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 				dir,
 				modtime,
 				filepath.Clean(path + "/" + e.Name()),
-				e.Name(),
+				name,
 		))
 	}
 
@@ -248,6 +252,7 @@ func refreshRepo(path string) bool {
 	refreshDefaultBranch(path)
 
 	cmd := exec.Command("git", "fetch", "--prune", "origin")
+	cmd.Stdout = os.Stdout
 	cmd.Dir = path
 
 	if err := cmd.Run(); err != nil {
@@ -260,27 +265,30 @@ func refreshRepo(path string) bool {
 
 func configureNewRepo(path string) bool {
 	// Config for the future, so git doesn't lose refs/gitbox/*
-	cmd := exec.Command("git", "--unset", "remote.origin.mirror")
+	cmd := exec.Command("git", "config", "--unset", "remote.origin.mirror")
 	cmd.Dir = path
+	cmd.Stdout = os.Stdout
 
 	if err := cmd.Run(); err != nil {
-		log.Printf("Failed to configure repo: %s, %v", path, err)
+		log.Printf("Failed to configure repo (unset mirror): %s, %v", path, err)
 		return false
 	}
 
-	cmd = exec.Command("git", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/heads/*")
+	cmd = exec.Command("git", "config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/heads/*")
 	cmd.Dir = path
+	cmd.Stdout = os.Stdout
 
 	if err := cmd.Run(); err != nil {
-		log.Printf("Failed to configure repo: %s, %v", path, err)
+		log.Printf("Failed to configure repo (replace fetch): %s, %v", path, err)
 		return false
 	}
 
-	cmd = exec.Command("git", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*")
+	cmd = exec.Command("git", "config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*")
 	cmd.Dir = path
+	cmd.Stdout = os.Stdout
 
 	if err := cmd.Run(); err != nil {
-		log.Printf("Failed to configure repo: %s, %v", path, err)
+		log.Printf("Failed to configure repo (add fetch): %s, %v", path, err)
 		return false
 	}
 
@@ -320,31 +328,25 @@ func (h *handler) fetchRepo(repo string) bool {
 			panic("NO TEMPORARY DIRECTORY")
 		}
 
-		tmpath := filepath.Clean(tmpDir + "/" + repo)
-		cmd = exec.Command("git", "clone", "--mirror", url, tmpath)
+		path := filepath.Clean(h.root + "/" + repo)
+
+		cmd = exec.Command("git", "clone", "--mirror", url, path)
 		cmd.Dir = h.root
+		cmd.Stdout = os.Stdout
 
 		if err := cmd.Run(); err != nil {
-			log.Printf("Failed to mirror clone '%s': %d", url, err)
+			log.Printf("Failed to mirror clone '%s': %v", url, err)
 			return false, nil
 		}
 
-		if !configureNewRepo(tmpath) {
+		if !configureNewRepo(path) {
 			return false, nil
 		}
 
-		if !updateServerInfo(tmpath) {
+		if !updateServerInfo(path) {
 			return false, nil
 		}
-
-		path := filepath.Clean(h.root + "/" + repo)
-		if err := os.Rename(tmpath, path); err != nil {
-			log.Printf("Failed to move repo to permanent location: %v", err)
-			os.Remove(tmpath)
-
-			return false, nil
-		}
-
+		
 		h.reposLock.Lock()
 		h.repos[path] = true
 		h.reposLock.Unlock()

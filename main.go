@@ -43,7 +43,7 @@ type repoDescription struct {
 	lastErr time.Time
 }
 
-const gitboxVersion = "v0.2"
+const gitboxVersion = "v0.3"
 	
 var infoRefs = "/info/refs"
 

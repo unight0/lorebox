@@ -78,7 +78,13 @@ func (c *clientContext) list() {
 }
 
 func (c *clientContext) refreshAll() {
-	c.simple("refresh-all")
+	fmt.Printf("This may take a while -- please be patient...\n")
+
+	resp := c.apiRequest("refresh-all")
+
+	checkStatusCode(resp.StatusCode)
+
+	fmt.Printf("%s", readBody(resp.Body))
 }
 
 func (c *clientContext) refresh() {

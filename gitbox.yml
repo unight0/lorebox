@@ -6,7 +6,12 @@ root: "."
 
 # Listen for incoming connections at host:port. No host/0.0.0.0 for any source
 # address, 127.0.0.1 or [::1] for loopback-only
-listen: ":8080"
+# Default port is 8080 for demonstration purposes. I advise either:
+# a) Run gitbox on a bare chosen unique port, enable HTTPS
+# b) If 443 is not taken, run gitbox there, enable HTTPS
+# c) Route through your HTTPS server running at 443 + use a subdomain like
+# box.bob.me. Disable HTTPS, gitbox never has to touch TLS certificates
+listen: "127.0.0.1:8080"
 
 # Options:
 # all -- need auth for any action
@@ -30,9 +35,8 @@ timeouts:
 # Have form of <id>:<hash>
 # Create with gitbox -gen-token
 tokens:
-  - "id-esfPfw:5MsdBkAD538XSV2EVEPpIU7Qxk3uU3H0mF-j0ZGkwtE"
+  - "id-XYv1wQ:xY3QH-S8usyQVIOIRfTU8q78DLKLNsI5fI9Lj3btGdA"
 
-#https:
-# cert: "fullchain.pem"
-# key: "key.pem"
-
+https:
+ certificate: "cert.pem"
+ key: "key.pem"

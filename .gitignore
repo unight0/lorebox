@@ -1,3 +1,4 @@
 gitbox
 docroot/*
 docroot
+*.pem

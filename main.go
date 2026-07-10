@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/cgi"
 	"math/rand/v2"
+	"crypto/tls"
 	"log"
 	"fmt"
 	"time"
@@ -39,6 +40,7 @@ type handler struct {
 type repoDescription struct {
 	repo string
 	size int64
+	lastErr time.Time
 }
 
 const gitboxVersion = "v0.2"
@@ -89,20 +91,45 @@ func refreshDefaultBranch(path string) bool {
 	return true
 }
 
-func refreshRepo(path string) bool {
+func refreshRepo(path string, logg *log.Logger) bool {
 	// Non-critical if fails
 	refreshDefaultBranch(path)
 
 	cmd := exec.Command("git", "fetch", "--prune", "origin")
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = logg.Writer()
+	cmd.Stderr = logg.Writer()
 	cmd.Dir = path
 
 	if err := cmd.Run(); err != nil {
-		log.Printf("Failed to refresh repo: %s, %v", path, err)
+		logg.Printf("Failed to refresh repo: %s, %v", path, err)
 		return false
 	}
 
-	return updateServerInfo(path, log.Default())
+	return updateServerInfo(path, logg)
+}
+
+func (h *handler) evictRepo(repo string, logg *log.Logger) bool {
+	path := filepath.Clean(h.root + "/" + repo)
+
+	h.reposLock.RLock()
+	if _, ok := h.repos[path]; !ok {
+		logg.Printf("Repo %s doesn't exist", repo)
+		h.reposLock.RUnlock()
+		return false
+	}
+	h.reposLock.RUnlock()
+
+	h.reposLock.Lock()
+	defer h.reposLock.Unlock()
+
+	if err := os.RemoveAll(path); err != nil {
+		logg.Printf("Could not remove '%s'", path)
+		return false
+	}
+
+	delete(h.repos, path)
+
+	return true
 }
 
 func configureNewRepo(path string, logg *log.Logger) bool {
@@ -278,8 +305,18 @@ func (h *handler) apiList(w http.ResponseWriter) {
 	var totalSize int64
 
 	bw.WriteString(fmt.Sprintf("Total %d repos\n", len(h.repos)))
+	bw.WriteString(fmt.Sprintf("% 36s % 16s % 28s\n",
+		"Repository",
+		"Size on disk",
+		"Last refresh error timestamp",
+	))
+
 	for _, d := range h.repos {
-		bw.WriteString(fmt.Sprintf("%s %d\n", d.repo, d.size))
+		lastErr := fmt.Sprintf("%s", d.lastErr)
+		if d.lastErr.IsZero() {
+			lastErr = "(none recorded)"
+		}
+		bw.WriteString(fmt.Sprintf("% 36s %016d % 28s\n", d.repo, d.size, lastErr))
 		totalSize += d.size
 	}
 
@@ -300,7 +337,7 @@ func (h *handler) apiStatus(w http.ResponseWriter) {
 		return
 	}
 
-	bw.WriteString(fmt.Sprintf("gitbox version %s\nuptime %s\ntotal storage %d\n",
+	bw.WriteString(fmt.Sprintf("gitbox server\nversion: %s\nuptime: %s\ntotal storage: %d\n",
 		gitboxVersion,
 		time.Now().Sub(h.startup),
 		size,
@@ -331,16 +368,75 @@ func (h *handler) apiFetch(w http.ResponseWriter, repo string) {
 	w.WriteHeader(200)
 
 	bw := bufio.NewWriter(w)
+	bw.Flush()
 
 	logg := log.New(bw, "", log.LstdFlags)
 
 	if h.fetchRepo(repo, logg) {
 		logg.Printf("Success\n")
-	} else {
+		return
+	}
+	
+	logg.Printf("Fail\n")
+}
+
+func (h *handler) apiRefresh(w http.ResponseWriter, repo string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(200)
+
+	bw := bufio.NewWriter(w)
+	defer bw.Flush()
+
+	logg := log.New(bw, "", log.LstdFlags)
+
+	path := filepath.Clean(h.root + "/" + repo)
+
+	if refreshRepo(path, logg) {
+		logg.Printf("Success\n")
+		return
+	}
+
+	logg.Printf("Fail\n")
+}
+
+func (h *handler) apiRefreshAll(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(200)
+
+	bw := bufio.NewWriter(w)
+	defer bw.Flush()
+
+	logg := log.New(bw, "", log.LstdFlags)
+
+	h.reposLock.RLock()
+	defer h.reposLock.RUnlock()
+
+	for path, d := range h.repos {
+		logg.Printf("Refreshing %s", d.repo)
+		if refreshRepo(path, logg) {
+			logg.Printf("Success\n")
+			continue
+		}
 		logg.Printf("Fail\n")
 	}
 
-	bw.Flush()
+}
+
+func (h *handler) apiEvict(w http.ResponseWriter, repo string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(200)
+
+	bw := bufio.NewWriter(w)
+	defer bw.Flush()
+
+	logg := log.New(bw, "", log.LstdFlags)
+
+	if h.evictRepo(repo, logg) {
+		logg.Printf("Success\n")
+		return
+	}
+
+	logg.Printf("Fail\n")
 }
 
 func (h *handler) api(w http.ResponseWriter, req *http.Request) {
@@ -359,8 +455,23 @@ func (h *handler) api(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if req.URL.Path == "/-/refresh-all" {
+		h.apiRefreshAll(w)
+		return
+	}
+
 	if strings.HasPrefix(req.URL.Path, "/-/fetch/") {
 		h.apiFetch(w, req.URL.Path[len("/-/fetch"):])
+		return
+	}
+
+	if strings.HasPrefix(req.URL.Path, "/-/refresh/") {
+		h.apiRefresh(w, req.URL.Path[len("/-/refresh"):])
+		return
+	}
+
+	if strings.HasPrefix(req.URL.Path, "/-/evict/") {
+		h.apiEvict(w, req.URL.Path[len("/-/evict"):])
 		return
 	}
 
@@ -535,7 +646,12 @@ func (h *handler) refresher(path string) {
 	for {
 		time.Sleep(duration)
 
-		if !refreshRepo(path) {
+		if !refreshRepo(path, log.Default()) {
+			h.reposLock.Lock()
+			d := h.repos[path]
+			d.lastErr = time.Now()
+			h.repos[path] = d
+			h.reposLock.Unlock()
 
 			if duration >= h.maxRefresh {
 				duration = h.maxRefresh
@@ -608,8 +724,10 @@ type Config struct {
 
 	Tokens []string
 
-	//HttpCert string		`yaml:"https:cert"`
-	//HttpKey string		`yaml:"https:key"`
+	Https struct {
+		Certificate string
+		Key string
+	}
 }
 
 func generateCredentials() {
@@ -633,24 +751,186 @@ func generateCredentials() {
 	hash := sha256.Sum256([]byte(enToken))
 	enHash := base64.RawURLEncoding.EncodeToString(hash[:])
 
-	fmt.Printf("Successfully generated token credentials\n")
-	fmt.Printf("Public (server) component:\n%s:%s\n\n", enTokenId, enHash)
-	fmt.Printf("Private component:\n%s:%s\n", enTokenId, enToken)
+	fmt.Printf("# Successfully generated token credentials\n")
+	fmt.Printf("# Public (server) component\n")
+	fmt.Printf("# Paste this into your gitbox.yml:\n")
+	fmt.Printf("tokens:\n")
+	fmt.Printf("- \"%s:%s\"\n\n", enTokenId, enHash)
+
+	fmt.Printf("# Private component\n")
+	fmt.Printf("# Use this as user:pass when using git, e.g.:\n")
+	fmt.Printf("# git clone https://%s:%s@box.bob.net/alice.net/alice/repo\n\n", enTokenId, enToken)
+	fmt.Printf("%s:%s\n", enTokenId, enToken)
+}
+
+func usage() {
+	fmt.Printf("gitbox server and remote control panel\n")
+	fmt.Printf("Verbs:\n\n")
+
+	fmt.Printf("Remote control:\n")
+	fmt.Printf("status          Query box status\n")
+	fmt.Printf("evict <repo>    Evict (delete) a repo\n")
+	fmt.Printf("refresh <repo>  Refresh a repo\n")
+	fmt.Printf("refresh-all     Refresh all repos on a box\n")
+	fmt.Printf("list            List all cached repos on a box\n")
+	fmt.Printf("Options:\n")
+	fmt.Printf("  -box          Override the remote box\n")
+	fmt.Printf("  -auth         Override auth token (syntax <id>:<token>)\n")
+	fmt.Printf("  -config       Point to the client config YAML file\n")
+	fmt.Printf("  -insecure     Connect over HTTP instead of HTTPS\n")
+	fmt.Printf("  -help         Options help\n\n")
+
+	fmt.Printf("Utilities:\n")
+	fmt.Printf("gen-token       Generate access token credentials\n\n")
+
+	fmt.Printf("Server:\n")
+	fmt.Printf("serve           Run the gitbox server\n")
+	fmt.Printf("Options:\n")
+	fmt.Printf("  -listen       Override the bind port and address\n")
+	fmt.Printf("  -root         Override the document (git database) root\n")
+	fmt.Printf("  -config       Point to the config YAML file\n")
+	fmt.Printf("  -help         Options help\n")
+}
+
+type ClientConfig struct {
+	Default string
+	Tokens map[string]string
+}
+
+type clientContext struct {
+	box, id, token, proto string
+}
+
+func (c *clientContext) status() {
+	http.Get()
+}
+
+func (c *clientContext) list() {
+}
+
+func (c *clientContext) refresh() {
+}
+
+func (c *clientContext) refreshAll() {
+}
+
+func (c *clientContext) evict() {
+}
+
+func client() {
+
+	var configFile, auth, box string
+	var insecure bool
+
+	flag.StringVar(&box, "box", "", "Override the remote box")
+	flag.StringVar(&configFile, "", "", "Point to the client config YAML file")
+	flag.StringVar(&auth, "auth", "", "Override auth token")
+	flag.BoolVar(&insecure, "insecure", "", "Connect over HTTP instead of HTTPS")
+	if err := flag.CommandLine.Parse(os.Args[2:]); err != nil {
+		log.Fatal(err)
+	}
+
+	var configData []byte
+	if configFile != "" {
+		var err error
+		configData, err = os.ReadFile(configFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	config := ClientConfig{}
+
+	if err := yaml.Unmarshal(configData, &config); err != nil {
+		log.Fatal(err)
+	}
+
+	if box == "" && config.Default == "" {
+		log.Fatalf("Specify the box to connect to either via -box or 'default:' config key")
+	}
+
+	if box == "" {
+		box = config.Default
+	}
+
+	if auth == "" {
+		if token, ok := config.Tokens[box]; !ok {
+			auth = token
+		}
+	}
+
+	substr := strings.Split(auth, ":")
+
+	if len(substr) != 2 {
+		log.Fatalf("Invalid token syntax: '%s', must be of form <id>:<token>", auth)
+	}
+
+	cl := clientContext{
+		box: box,
+		id: substr[0],
+		token: substr[1], 
+		proto: "https",
+	}
+
+	if insecure {
+		cl.proto = "http"
+	}
+
+	switch os.Args[1] {
+	case "evict":
+		cl.evict()
+		return
+	case "refresh":
+		cl.refresh()
+		return
+	case "refresh-all":
+		cl.refreshAll()
+		return
+	case "list":
+		cl.list()
+		return
+	case "status":
+		cl.status()
+		return
+	default:
+		fmt.Printf("Unknown command verb: %v\n", os.Args[1])
+		usage()
+		return
+	}
+
 }
 
 func main() {
+
+	if len(os.Args) < 2 {
+		fmt.Printf("Select a command verb\n")
+		usage()
+		return
+	}
+
+
+	switch os.Args[1] {
+	case "status", "evict", "refresh", "refresh-all", "list":
+		client()
+		return
+	case "gen-token":
+		generateCredentials()
+		return
+	case "serve":
+		break
+	default:
+		fmt.Printf("Unknown command verb: %v\n", os.Args[1])
+		usage()
+		return
+	}
+
 	var listen, root, configFile string
-	var genToken bool
 
 	flag.StringVar(&listen, "listen", "", "Override the bind port and address")
 	flag.StringVar(&root, "root", "", "Override the document root")
 	flag.StringVar(&configFile, "config", "", "Point to the config YAML file")
-	flag.BoolVar(&genToken, "gen-token", false, "Generate authentication credentials")
-	flag.Parse()
-
-	if genToken {
-		generateCredentials()
-		return
+	if err := flag.CommandLine.Parse(os.Args[2:]); err != nil {
+		log.Fatal(err)
 	}
 
 	log.Printf("Starting gitbox " + gitboxVersion)
@@ -696,6 +976,10 @@ func main() {
 	}
 	if config.Auth != "new" && config.Auth != "all" && config.Auth != "none" {
 		log.Fatal("Error: invalid authentication mode. Select new/all/none")
+	}
+	// XOR
+	if (config.Https.Certificate == "") != (config.Https.Key == "") {
+		log.Fatal("Error: specify _both_ the certificate and key to use HTTPS")
 	}
 
 	root, err = expandPath(root)
@@ -762,6 +1046,19 @@ func main() {
 		WriteTimeout: 10 * time.Minute,
 		IdleTimeout: 20 * time.Second,
 		MaxHeaderBytes: 10 * 1024,
+	}
+
+	if config.Https.Key != "" {
+		kpr, err := NewKeypairReloader(config.Https.Certificate, config.Https.Key)
+
+		if err != nil {
+			log.Fatalf("Could not create a key pair reloader: %v", err)
+		}
+
+		serv.TLSConfig = &tls.Config{}
+		serv.TLSConfig.GetCertificate = kpr.GetCertificateFunc()
+
+		log.Fatal(serv.ListenAndServeTLS("", ""))
 	}
 
 	log.Fatal(serv.ListenAndServe())

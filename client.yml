@@ -1,0 +1,7 @@
+
+# Your default (usually personal) box
+default: "localhost:8080"
+
+# List boxes and their access tokens here
+tokens:
+  "localhost:8080": "id-XYv1wQ:6DQbd0fCB3AE165vFQ8Y8M_pgHoO5F5X9lMSNkYaUt0"

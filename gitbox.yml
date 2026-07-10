@@ -8,9 +8,9 @@ listen: ":8080"
 
 # Options:
 # all -- need auth for any action
-# new -- need auth only for new (uncached) repos
+# new -- need auth only for fetching new (uncached) repos
 # none -- no auth. Dangerous, don't use unless you know what you are doing
-auth: "new"
+auth: "none"
 
 # Time syntax:
 # Xd, Xh, Xm, Xs -- X days, hours, minutes, seconds

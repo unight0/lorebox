@@ -17,6 +17,7 @@ import (
 	"flag"
 	"errors"
 	"strconv"
+	"sync"
 	"encoding/base64"
 	"go.yaml.in/yaml/v4"
 	"crypto/sha256"
@@ -26,11 +27,20 @@ import (
 )
 
 type handler struct {
-	root string
+	root, auth string
 	gitTimeout, defaultRefresh, maxRefresh, minJitter, maxJitter time.Duration
 	git *cgi.Handler
 	fetchGroup sn.Group
 	tokens map[string]string
+	repos map[string]repoDescription
+	reposLock sync.RWMutex
+	startup time.Time
+	effectiveConfig *Config
+}
+
+type repoDescription struct {
+	repo string
+	size int64
 }
 
 const gitboxVersion = "v0.2"
@@ -218,6 +228,13 @@ func chopInfoRefs(path string) string {
 	return path
 }
 
+func (h *handler) chopRoot(path string) string {
+	if strings.HasPrefix(path, filepath.Clean(h.root + "/")) {
+		path = path[len(h.root):]
+	}
+	return path
+}
+
 func refreshDefaultBranch(path string) bool {
 	cmd := exec.Command("git", "ls-remote", "--symref", "origin", "HEAD")
 	cmd.Dir = path
@@ -275,54 +292,81 @@ func refreshRepo(path string) bool {
 		return false
 	}
 
-	return updateServerInfo(path)
+	return updateServerInfo(path, log.Default())
 }
 
-func configureNewRepo(path string) bool {
+func configureNewRepo(path string, logg *log.Logger) bool {
 	// Config for the future, so git doesn't lose refs/gitbox/*
 	cmd := exec.Command("git", "config", "--unset", "remote.origin.mirror")
 	cmd.Dir = path
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = logg.Writer()
+	cmd.Stderr = logg.Writer()
 
 	if err := cmd.Run(); err != nil {
-		log.Printf("Failed to configure repo (unset mirror): %s, %v", path, err)
+		logg.Printf("Failed to configure repo (unset mirror): %s, %v", path, err)
 		return false
 	}
 
 	cmd = exec.Command("git", "config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/heads/*")
 	cmd.Dir = path
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = logg.Writer()
+	cmd.Stderr = logg.Writer()
 
 	if err := cmd.Run(); err != nil {
-		log.Printf("Failed to configure repo (replace fetch): %s, %v", path, err)
+		logg.Printf("Failed to configure repo (replace fetch): %s, %v", path, err)
 		return false
 	}
 
 	cmd = exec.Command("git", "config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*")
 	cmd.Dir = path
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = logg.Writer()
+	cmd.Stderr = logg.Writer()
 
 	if err := cmd.Run(); err != nil {
-		log.Printf("Failed to configure repo (add fetch): %s, %v", path, err)
+		logg.Printf("Failed to configure repo (add fetch): %s, %v", path, err)
 		return false
 	}
 
 	return true
 }
 
-func updateServerInfo(path string) bool {
+func updateServerInfo(path string, logg *log.Logger) bool {
 	cmd := exec.Command("git", "update-server-info")
 	cmd.Dir = path
+	cmd.Stdout = logg.Writer()
+	cmd.Stderr = logg.Writer()
 
 	if err := cmd.Run(); err != nil {
-		log.Printf("Failed to run update-server-info: %s, %v", path, err)
+		logg.Printf("Failed to run update-server-info: %s, %v", path, err)
 		return false
 	}
 
 	return true
 }
 
-func (h *handler) fetchRepo(repo string) bool {
+func dirSize(path string) (size int64, err error) {
+	err = filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+
+		size += info.Size()
+		return nil
+	})
+
+	return
+}
+
+func (h *handler) fetchRepo(repo string, logg *log.Logger) bool {
 
 	success, _, _ := h.fetchGroup.Do(repo, func() (any, error) {
 		url := "https:/" + repo
@@ -333,7 +377,7 @@ func (h *handler) fetchRepo(repo string) bool {
 		cmd := exec.Command("git", "ls-remote", "--exit-code", url)
 
 		if err := cmd.Run(); err != nil {
-			log.Printf("Failed to ls-remote '%s': %v", url, err)
+			logg.Printf("Failed to ls-remote '%s': %v", url, err)
 			return false, nil
 		}
 
@@ -341,20 +385,34 @@ func (h *handler) fetchRepo(repo string) bool {
 
 		cmd = exec.Command("git", "clone", "--mirror", url, path)
 		cmd.Dir = h.root
-		cmd.Stdout = os.Stdout
+		cmd.Stdout = logg.Writer()
+		cmd.Stderr = logg.Writer()
 
 		if err := cmd.Run(); err != nil {
-			log.Printf("Failed to mirror clone '%s': %v", url, err)
+			logg.Printf("Failed to mirror clone '%s': %v", url, err)
 			return false, nil
 		}
 
-		if !configureNewRepo(path) {
+		if !configureNewRepo(path, logg) {
 			return false, nil
 		}
 
-		if !updateServerInfo(path) {
+		if !updateServerInfo(path, logg) {
 			return false, nil
 		}
+
+		size, err := dirSize(path)
+
+		if err != nil {
+			logg.Printf("Failed to calculate directory size: %d", path)
+		}
+
+		h.reposLock.Lock()
+		h.repos[path] = repoDescription {
+			repo: repo,
+			size: size,
+		}
+		h.reposLock.Unlock()
 		
 		go h.refresher(path)
 
@@ -410,15 +468,14 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 		if hasPostfix(path, infoRefs) {
 			repo := chopInfoRefs(relpath)
 
-			id, token, ok := req.BasicAuth()
-			if !ok || !h.validateCredentials(id, token) {
-				h.serve401(w)
+			// Authenticate
+			if !h.requireAuth(w, req) {
 				return
 			}
 
 			log.Printf("Running pullthrough on '%s'", repo)
 
-			if !h.fetchRepo(repo) {
+			if !h.fetchRepo(repo, log.Default()) {
 				h.serve404(w)
 				return
 			}
@@ -440,9 +497,144 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 	h.serveFile(w, relpath)
 }
 
+func (h *handler) requireAuth(w http.ResponseWriter, req *http.Request) bool {
+	if h.auth != "none" {
+		id, token, ok := req.BasicAuth()
+		if !ok || !h.validateCredentials(id, token) {
+			h.serve401(w)
+			return false
+		}
+	}
+	return true
+}
+
+func (h *handler) apiList(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(200)
+
+	bw := bufio.NewWriter(w)
+
+	h.reposLock.RLock()
+	defer h.reposLock.RUnlock()
+
+	var totalSize int64
+
+	bw.WriteString(fmt.Sprintf("Total %d repos\n", len(h.repos)))
+	for _, d := range h.repos {
+		bw.WriteString(fmt.Sprintf("%s %d\n", d.repo, d.size))
+		totalSize += d.size
+	}
+
+	bw.WriteString(fmt.Sprintf("Total %d bytes\n", totalSize))
+
+	bw.Flush()
+}
+
+func (h *handler) apiStatus(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(200)
+
+	bw := bufio.NewWriter(w)
+
+	size, err := dirSize(h.root)
+	if err != nil {
+		log.Printf("Could not measure size of root dir")
+		return
+	}
+
+	bw.WriteString(fmt.Sprintf("gitbox version %s\nuptime %s\ntotal storage %d\n",
+		gitboxVersion,
+		time.Now().Sub(h.startup),
+		size,
+	))
+
+	bw.Flush()
+}
+
+func (h *handler) apiEffectiveConfig(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(200)
+
+	bw := bufio.NewWriter(w)
+	defer bw.Flush()
+
+	out, err := yaml.Marshal(h.effectiveConfig)
+
+	if err != nil {
+		bw.WriteString(fmt.Sprintf("Error: %w\n", err))
+		return
+	}
+
+	bw.Write(out)
+}
+
+func (h *handler) apiFetch(w http.ResponseWriter, repo string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(200)
+
+	bw := bufio.NewWriter(w)
+
+	logg := log.New(bw, "", log.LstdFlags)
+
+	if h.fetchRepo(repo, logg) {
+		logg.Printf("Success\n")
+	} else {
+		logg.Printf("Fail\n")
+	}
+
+	bw.Flush()
+}
+
+func (h *handler) api(w http.ResponseWriter, req *http.Request) {
+	if req.URL.Path == "/-/list" {
+		h.apiList(w)
+		return
+	}
+
+	if req.URL.Path == "/-/status" {
+		h.apiStatus(w)
+		return
+	}
+
+	if req.URL.Path == "/-/effective-config" {
+		h.apiEffectiveConfig(w)
+		return
+	}
+
+	if strings.HasPrefix(req.URL.Path, "/-/fetch/") {
+		h.apiFetch(w, req.URL.Path[len("/-/fetch"):])
+		return
+	}
+
+	// Invalid API point
+	h.serve400(w)
+}
+
 func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	svc := req.URL.Query().Get("service")
+
+	if h.auth == "all" {
+		id, token, ok := req.BasicAuth()
+		if !ok || !h.validateCredentials(id, token) {
+			h.serve401(w)
+			return
+		}
+	}
+
+	if req.Method == "GET" && strings.HasPrefix(req.URL.Path, "/-/") {
+		//if !h.requireAuth(w, req) {
+		//	return
+		//}
+		// Prevent cross-site nastiness
+		if req.Header.Get("X-Gitbox-Api") != "On" {
+			log.Printf("Valid auth, but no X-Gitbox-Api header")
+			h.serve400(w)
+			return
+		}
+		h.api(w, req)
+		return
+	}
 
 	// Smart ref advertisement
 	if req.Method == "GET" && hasPostfix(req.URL.Path, infoRefs) && svc == "git-upload-pack"{
@@ -450,15 +642,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		if _, err := os.Stat(h.root + repo); err != nil {
 
-			id, token, ok := req.BasicAuth()
-			if !ok || !h.validateCredentials(id, token) {
-				h.serve401(w)
+			// Authenticate
+			if !h.requireAuth(w, req) {
 				return
 			}
 
 			log.Printf("Running pullthrough on '%s'", repo)
 			
-			if !h.fetchRepo(repo) {
+			if !h.fetchRepo(repo, log.Default()) {
 				h.serve404(w)
 				return
 			}
@@ -488,15 +679,15 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	h.serve400(w)
 }
 
-func (h *handler) walkRepos() map[string]bool {
+func (h *handler) walkRepos() {
 	// No repo root deeper than 10
 	maxDepth := 10
 
 	log.Printf("Walking document root to find already existing repos...")
 
-	var walk func(dir string, depth int) (repos map[string]bool)
+	var walk func(dir string, depth int) (repos map[string]repoDescription)
 
-	walk = func(dir string, depth int) (repos map[string]bool) {
+	walk = func(dir string, depth int) (repos map[string]repoDescription) {
 		if depth > maxDepth {
 			return
 		}
@@ -523,27 +714,37 @@ func (h *handler) walkRepos() map[string]bool {
 		for _, e := range entries {
 			if e.Name() == "HEAD" {
 				log.Printf("Found %s", dir)
-				return map[string]bool{dir: true}
+				size, err := dirSize(dir)
+
+				if err != nil {
+					log.Printf("Could not measure size of %s", dir)
+				}
+
+				return map[string]repoDescription {
+					dir: repoDescription {
+						repo: h.chopRoot(dir),
+						size: size,
+					},
+				}
 			}
 		}
 
 		// Walk subdirectories
-		repos = map[string]bool{}
+		repos = map[string]repoDescription{}
 		for _, e := range entries {
 			found := walk(dir + "/" + e.Name(), depth + 1)
-			for r, _ := range found {
-				repos[r] = true
+			for r, v := range found {
+				repos[r] = v
 			}
 		}
 
 		return
 	}
 
-	repos := walk(h.root, 0)
+	// No lock, nothing runs at this point yet
+	h.repos = walk(h.root, 0)
 
 	log.Printf("Done walking repos")
-
-	return repos
 }
 
 func expandPath(path string) (string, error) {
@@ -633,6 +834,8 @@ type Config struct {
 	Root string
 	Listen string
 
+	Auth string
+
 	Timeouts struct {
 		Git Duration
 		Refresh struct {
@@ -707,6 +910,7 @@ func main() {
 	config := Config {
 		Root: ".",
 		Listen: ":8080",
+		Auth: "new",
 	}
 	config.Timeouts.Git = 10 * Minute
 	config.Timeouts.Refresh.Default = 12 * Hour
@@ -732,6 +936,9 @@ func main() {
 	if config.Timeouts.Refresh.Default > config.Timeouts.Refresh.Max {
 		log.Fatal("Error: default repo refresh time > max refresh time")
 	}
+	if config.Auth != "new" && config.Auth != "all" && config.Auth != "none" {
+		log.Fatal("Error: invalid authentication mode. Select new/all/none")
+	}
 
 	root, err = expandPath(root)
 
@@ -752,7 +959,9 @@ func main() {
 	backend := filepath.Join(strings.TrimSpace(string(gitdir)), "git-http-backend")
 
 	h := &handler {
+		effectiveConfig: &config,
 		root: root,
+		auth: config.Auth,
 		gitTimeout: config.Timeouts.Git.D(),	
 		defaultRefresh: config.Timeouts.Refresh.Default.D(),
 		maxRefresh: config.Timeouts.Refresh.Max.D(),
@@ -768,6 +977,8 @@ func main() {
 		},
 	}
 
+	h.startup = time.Now()
+
 	h.tokens = map[string]string{}
 	for _, t := range config.Tokens {
 		parts := strings.Split(t, ":")
@@ -779,9 +990,10 @@ func main() {
 		h.tokens[parts[0]] = parts[1]
 	}
 
-	repos := h.walkRepos()
+	// Populates h.repos
+	h.walkRepos()
 
-	for r := range repos {
+	for r := range h.repos {
 		go h.refresher(r)
 	}
 

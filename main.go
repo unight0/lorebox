@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"net/http"
 	"net/http/cgi"
+	"math/rand/v2"
 	"log"
 	"fmt"
 	"time"
@@ -17,14 +18,21 @@ import (
 	"flag"
 	"errors"
 	_ "embed"
+	"sync"
+	sn "golang.org/x/sync/singleflight"
 )
 
 type handler struct {
 	root string
-	gitTimeout time.Duration
+	gitTimeout, defaultRefresh, maxRefresh, jitterUnit time.Duration
+	minJitter, maxJitter int
 	git *cgi.Handler
+	fetchGroup sn.Group
+	repos map[string]bool
+	reposLock sync.RWMutex
 }
 
+const gitboxVersion = "v0.2"
 	
 //go:embed html/400.html
 var html400 []byte
@@ -41,8 +49,8 @@ var infoRefs = "/info/refs"
 
 // Doesn't exist
 func (h *handler) serve404(w http.ResponseWriter) {
-	w.WriteHeader(404)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(404)
 
 	_, err := w.Write(html404)
 
@@ -53,8 +61,8 @@ func (h *handler) serve404(w http.ResponseWriter) {
 
 // Client error; invalid request
 func (h *handler) serve400(w http.ResponseWriter) {
-	w.WriteHeader(400)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(400)
 
 	_, err := w.Write(html400)
 
@@ -65,8 +73,8 @@ func (h *handler) serve400(w http.ResponseWriter) {
 
 // Internal server error
 func (h *handler) serve500(w http.ResponseWriter) {
-	w.WriteHeader(500)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(500)
 
 	_, err := w.Write(html500)
 
@@ -84,8 +92,8 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 		return
 	}
 
-	w.WriteHeader(200)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(200)
 
 	bw := bufio.NewWriter(w)
 
@@ -119,11 +127,12 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 			dir = "Yes"
 		}
 
-		size := ""
+		size, modtime := "", ""
 		info, err := e.Info()
 
 		if err == nil {
 			size = fmt.Sprintf("%010d", info.Size())
+			modtime = info.ModTime().Format("2006-01-02 15:04:05")
 		}
 
 		bw.WriteString(fmt.Sprintf(
@@ -135,13 +144,13 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 				</tr>`,
 				size,
 				dir,
-				info.ModTime().Format("2006-01-02 15:04:05"),
+				modtime,
 				filepath.Clean(path + "/" + e.Name()),
 				e.Name(),
 		))
 	}
 
-	bw.WriteString("</table><hr>gitbox server v0.1")
+	bw.WriteString("</table><hr>gitbox server " + gitboxVersion)
 	bw.Write(htmlGenericEnd)
 	bw.Flush()
 }
@@ -162,8 +171,8 @@ func (h *handler) serveFile(w http.ResponseWriter, path string) {
 	}
 	defer file.Close()
 
-	w.WriteHeader(200)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(200)
 
 	_, err = io.Copy(w, file)
 
@@ -189,40 +198,163 @@ func chopInfoRefs(path string) string {
 	return path
 }
 
-func (h *handler) fetchRepo(repo string) bool {
-
-	url := "https:/" + repo
-	// First just ls...
-	cmd := exec.Command("git", "ls-remote", "--exit-code", url)
-	cmd.WaitDelay = h.gitTimeout
-
-	if err := cmd.Run(); err != nil {
-		log.Printf("Failed to ls-remote '%s': %v", url, err)
-		return false
-	}
-
-	path := filepath.Clean(h.root + repo)
-	cmd = exec.Command("git", "clone", "--mirror", url, path)
-	cmd.WaitDelay = h.gitTimeout
-	cmd.Dir = h.root
-
-	if err := cmd.Run(); err != nil {
-		log.Printf("Failed to mirror clone '%s': %d", url, err)
-		return false
-	}
-
-	cmd = exec.Command("git", "update-server-info")
-	cmd.WaitDelay = h.gitTimeout
+func refreshDefaultBranch(path string) bool {
+	cmd := exec.Command("git", "ls-remote", "--symref", "origin", "HEAD")
 	cmd.Dir = path
 
 	if err := cmd.Run(); err != nil {
-		log.Printf("Failed to run update-server-info: %s, %v", repo, err)
+		log.Printf("Failed to refresh current default branch: %s, %v", path, err)
 		return false
 	}
 
-	//registerRepo()
+	out, err := cmd.Output()
+
+	if err != nil {
+		log.Printf("Failed to get output: %v", err)
+		return false
+	}
+
+
+	// Parsing below
+	// We are searching for a line that looks like 'ref: <...>\tHEAD'
+
+	ref := ""
+
+	for line := range strings.Lines(string(out)) {
+		_, err := fmt.Sscanf(line, "ref: refs/heads/%s\tHEAD", &ref)
+		if err == nil {
+			break
+		}
+	}
+
+	if ref == "" {
+		log.Printf("Failed to refresh current default branch: found no 'ref: ': %s", path)
+		return false
+	}
+
+	cmd = exec.Command("git", "symbolic-ref", "HEAD", "refs/heads/" + ref)
+	cmd.Dir = path
+
+	if err := cmd.Run(); err != nil {
+		log.Printf("Failed to refresh current default branch: %s, %v", path, err)
+		return false
+	}
 
 	return true
+}
+
+func refreshRepo(path string) bool {
+	// Non-critical if fails
+	refreshDefaultBranch(path)
+
+	cmd := exec.Command("git", "fetch", "--prune", "origin")
+	cmd.Dir = path
+
+	if err := cmd.Run(); err != nil {
+		log.Printf("Failed to refresh repo: %s, %v", path, err)
+		return false
+	}
+
+	return updateServerInfo(path)
+}
+
+func configureNewRepo(path string) bool {
+	// Config for the future, so git doesn't lose refs/gitbox/*
+	cmd := exec.Command("git", "--unset", "remote.origin.mirror")
+	cmd.Dir = path
+
+	if err := cmd.Run(); err != nil {
+		log.Printf("Failed to configure repo: %s, %v", path, err)
+		return false
+	}
+
+	cmd = exec.Command("git", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/heads/*")
+	cmd.Dir = path
+
+	if err := cmd.Run(); err != nil {
+		log.Printf("Failed to configure repo: %s, %v", path, err)
+		return false
+	}
+
+	cmd = exec.Command("git", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*")
+	cmd.Dir = path
+
+	if err := cmd.Run(); err != nil {
+		log.Printf("Failed to configure repo: %s, %v", path, err)
+		return false
+	}
+
+	return true
+}
+
+func updateServerInfo(path string) bool {
+	cmd := exec.Command("git", "update-server-info")
+	cmd.Dir = path
+
+	if err := cmd.Run(); err != nil {
+		log.Printf("Failed to run update-server-info: %s, %v", path, err)
+		return false
+	}
+
+	return true
+}
+
+func (h *handler) fetchRepo(repo string) bool {
+
+	success, _, _ := h.fetchGroup.Do(repo, func() (any, error) {
+		url := "https:/" + repo
+
+		// TODO: timeouts
+
+		// First just ls...
+		cmd := exec.Command("git", "ls-remote", "--exit-code", url)
+
+		if err := cmd.Run(); err != nil {
+			log.Printf("Failed to ls-remote '%s': %v", url, err)
+			return false, nil
+		}
+
+		tmpDir := os.TempDir() 
+
+		if tmpDir == "" {
+			panic("NO TEMPORARY DIRECTORY")
+		}
+
+		tmpath := filepath.Clean(tmpDir + "/" + repo)
+		cmd = exec.Command("git", "clone", "--mirror", url, tmpath)
+		cmd.Dir = h.root
+
+		if err := cmd.Run(); err != nil {
+			log.Printf("Failed to mirror clone '%s': %d", url, err)
+			return false, nil
+		}
+
+		if !configureNewRepo(tmpath) {
+			return false, nil
+		}
+
+		if !updateServerInfo(tmpath) {
+			return false, nil
+		}
+
+		path := filepath.Clean(h.root + "/" + repo)
+		if err := os.Rename(tmpath, path); err != nil {
+			log.Printf("Failed to move repo to permanent location: %v", err)
+			os.Remove(tmpath)
+
+			return false, nil
+		}
+
+		h.reposLock.Lock()
+		h.repos[path] = true
+		h.reposLock.Unlock()
+
+		go h.refresher(path)
+
+		return true, nil
+	})
+
+	return success.(bool)
 }
 
 func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
@@ -237,7 +369,7 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Outside of the root directory
-	if !strings.HasPrefix(path, h.root) {
+	if !strings.HasPrefix(path, filepath.Clean(h.root + "/")) {
 		log.Printf("External path '%s' was requested", path)
 		h.serve400(w)
 		return
@@ -256,7 +388,7 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 
-			h.serveFile(w, path)
+			h.serveFile(w, relpath)
 			return
 		}
 
@@ -312,6 +444,63 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	h.serve400(w)
 }
 
+func (h *handler) walkRepos() {
+	// No repo root deeper than 10
+	maxDepth := 10
+
+	log.Printf("Walking document root to find already existing repos...")
+
+	var walk func(dir string, depth int) (repos map[string]bool)
+
+	walk = func(dir string, depth int) (repos map[string]bool) {
+		if depth > maxDepth {
+			return
+		}
+
+		info, err := os.Stat(dir)
+
+		if err != nil {
+			log.Printf("Error while walking: %v", err)
+			return
+		}
+
+		if !info.IsDir() {
+			return
+		}
+
+		entries, err := os.ReadDir(dir)
+
+		if err != nil {
+			log.Printf("Error while walking: %v", err)
+			return
+		}
+
+		// Check if a repo
+		for _, e := range entries {
+			if e.Name() == "HEAD" {
+				log.Printf("Found %s", dir)
+				return map[string]bool{dir: true}
+			}
+		}
+
+		// Walk subdirectories
+		repos = map[string]bool{}
+		for _, e := range entries {
+			found := walk(dir + "/" + e.Name(), depth + 1)
+			for r, _ := range found {
+				repos[r] = true
+			}
+		}
+
+		return
+	}
+
+	// Nothing runs at this point, so no lock
+	h.repos = walk(h.root, 0)
+
+	log.Printf("Done walking repos")
+}
+
 func expandPath(path string) (string, error) {
 	path, err := filepath.Abs(path)
 
@@ -322,14 +511,39 @@ func expandPath(path string) (string, error) {
 	resolved, err := filepath.EvalSymlinks(path)
 
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return path, nil
-		}
-
-		return "", err
+		return path, nil
 	}
 
 	return resolved, nil
+}
+
+func (h *handler) jitteredRefresh() time.Duration {
+	if h.maxJitter == 0 {
+		return h.defaultRefresh
+	}
+
+	jitter := rand.Int() % (h.maxJitter - h.minJitter) + h.minJitter
+	return h.defaultRefresh + time.Duration(jitter) * h.jitterUnit
+}
+
+func (h *handler) refresher(path string) {
+	duration := h.jitteredRefresh()
+
+	for {
+		time.Sleep(duration)
+
+		if !refreshRepo(path) {
+
+			if duration > h.maxRefresh {
+				log.Printf("%s exceeded max refresh duration", path)
+				return
+			}
+
+			duration *= 2
+		}
+
+		duration = h.jitteredRefresh()
+	}
 }
 
 func main() {
@@ -345,7 +559,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	log.Printf("Starting gitbox v0.1")
+	html400 = []byte(strings.Replace(string(html400), "__GITBOX_VERSION", gitboxVersion, -1))
+	html404 = []byte(strings.Replace(string(html404), "__GITBOX_VERSION", gitboxVersion, -1))
+	html500 = []byte(strings.Replace(string(html500), "__GITBOX_VERSION", gitboxVersion, -1))
+
+	log.Printf("Starting gitbox " + gitboxVersion)
 
 	gitdir, err := exec.Command("git", "--exec-path").Output()
 
@@ -358,6 +576,11 @@ func main() {
 	h := &handler {
 		root: root,
 		gitTimeout: time.Minute * 5,	
+		defaultRefresh: time.Hour * 12,
+		maxRefresh: time.Hour * 24 * 20,
+		minJitter: 20,
+		maxJitter: 50,
+		jitterUnit: time.Minute,
 		git: &cgi.Handler {
 			Path: backend,
 			Dir: root,
@@ -366,6 +589,13 @@ func main() {
 				"GIT_HTTP_EXPORT_ALL=1",
 			},
 		},
+	}
+
+	// Populates h.repos from file system
+	h.walkRepos()
+
+	for r := range h.repos {
+		go h.refresher(r)
 	}
 
 	serv := &http.Server {

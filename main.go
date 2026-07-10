@@ -1,7 +1,6 @@
 package main
 
 
-
 import (
 	"path/filepath"
 	"net/http"
@@ -17,25 +16,25 @@ import (
 	"strings"
 	"flag"
 	"errors"
+	"strconv"
+	"go.yaml.in/yaml/v4"
 	_ "embed"
-	"sync"
 	sn "golang.org/x/sync/singleflight"
 )
 
 type handler struct {
 	root string
-	gitTimeout, defaultRefresh, maxRefresh, jitterUnit time.Duration
-	minJitter, maxJitter int
+	gitTimeout, defaultRefresh, maxRefresh, minJitter, maxJitter time.Duration
 	git *cgi.Handler
 	fetchGroup sn.Group
-	repos map[string]bool
-	reposLock sync.RWMutex
 }
 
 const gitboxVersion = "v0.2"
 	
 //go:embed html/400.html
 var html400 []byte
+//go:embed html/401.html
+var html401 []byte
 //go:embed html/404.html
 var html404 []byte
 //go:embed html/500.html
@@ -68,6 +67,19 @@ func (h *handler) serve400(w http.ResponseWriter) {
 
 	if err != nil {
 		log.Printf("400 write: %v", err)
+	}
+}
+
+// Authentication requred 
+func (h *handler) serve401(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("WWW-Authenticate", "Basic realm=\"gitbox\"")
+	w.WriteHeader(401)
+
+	_, err := w.Write(html401)
+
+	if err != nil {
+		log.Printf("401 write: %v", err)
 	}
 }
 
@@ -206,12 +218,11 @@ func refreshDefaultBranch(path string) bool {
 	cmd := exec.Command("git", "ls-remote", "--symref", "origin", "HEAD")
 	cmd.Dir = path
 
-	if err := cmd.Run(); err != nil {
+	out, err := cmd.Output()
+	if err != nil {
 		log.Printf("Failed to refresh current default branch: %s, %v", path, err)
 		return false
 	}
-
-	out, err := cmd.Output()
 
 	if err != nil {
 		log.Printf("Failed to get output: %v", err)
@@ -322,12 +333,6 @@ func (h *handler) fetchRepo(repo string) bool {
 			return false, nil
 		}
 
-		tmpDir := os.TempDir() 
-
-		if tmpDir == "" {
-			panic("NO TEMPORARY DIRECTORY")
-		}
-
 		path := filepath.Clean(h.root + "/" + repo)
 
 		cmd = exec.Command("git", "clone", "--mirror", url, path)
@@ -347,16 +352,17 @@ func (h *handler) fetchRepo(repo string) bool {
 			return false, nil
 		}
 		
-		h.reposLock.Lock()
-		h.repos[path] = true
-		h.reposLock.Unlock()
-
 		go h.refresher(path)
 
 		return true, nil
 	})
 
 	return success.(bool)
+}
+
+func (h *handler) validateCredentials(login, pass string) bool {
+	log.Printf("Validating %s:%s", login, pass)
+	return true
 }
 
 func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
@@ -382,6 +388,12 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		if hasPostfix(path, infoRefs) {
 			repo := chopInfoRefs(relpath)
+
+			login, pass, ok := req.BasicAuth()
+			if !ok || !h.validateCredentials(login, pass) {
+				h.serve401(w)
+				return
+			}
 
 			log.Printf("Running pullthrough on '%s'", repo)
 
@@ -416,6 +428,15 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		repo := chopInfoRefs(filepath.Clean("/" + req.URL.Path))
 
 		if _, err := os.Stat(h.root + repo); err != nil {
+
+			login, pass, ok := req.BasicAuth()
+			if !ok || !h.validateCredentials(login, pass) {
+				h.serve401(w)
+				return
+			}
+
+			log.Printf("Running pullthrough on '%s'", repo)
+			
 			if !h.fetchRepo(repo) {
 				h.serve404(w)
 				return
@@ -446,7 +467,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	h.serve400(w)
 }
 
-func (h *handler) walkRepos() {
+func (h *handler) walkRepos() map[string]bool {
 	// No repo root deeper than 10
 	maxDepth := 10
 
@@ -497,10 +518,11 @@ func (h *handler) walkRepos() {
 		return
 	}
 
-	// Nothing runs at this point, so no lock
-	h.repos = walk(h.root, 0)
+	repos := walk(h.root, 0)
 
 	log.Printf("Done walking repos")
+
+	return repos
 }
 
 func expandPath(path string) (string, error) {
@@ -520,12 +542,11 @@ func expandPath(path string) (string, error) {
 }
 
 func (h *handler) jitteredRefresh() time.Duration {
-	if h.maxJitter == 0 {
-		return h.defaultRefresh
+	jitter := time.Duration(0)
+	if span := h.maxJitter - h.minJitter; span > 0 {
+		jitter = rand.N(span)
 	}
-
-	jitter := rand.Int() % (h.maxJitter - h.minJitter) + h.minJitter
-	return h.defaultRefresh + time.Duration(jitter) * h.jitterUnit
+	return h.defaultRefresh + h.minJitter + jitter
 }
 
 func (h *handler) refresher(path string) {
@@ -536,26 +557,122 @@ func (h *handler) refresher(path string) {
 
 		if !refreshRepo(path) {
 
-			if duration > h.maxRefresh {
-				log.Printf("%s exceeded max refresh duration", path)
-				return
+			if duration >= h.maxRefresh {
+				duration = h.maxRefresh
+				log.Printf("%s reached max refresh duration", path)
+				continue
 			}
 
 			duration *= 2
+			continue
 		}
 
 		duration = h.jitteredRefresh()
 	}
 }
 
-func main() {
-	var port, root string
+type Duration time.Duration
 
-	flag.StringVar(&port, "port", "8080", "Specify the port to use")
-	flag.StringVar(&root, "root", ".", "Specify the document root")
+func (d Duration) D() time.Duration {
+	return time.Duration(d)
+}
+
+func D(d time.Duration) Duration {
+	return Duration(d)
+}
+
+var Hour = D(time.Hour)
+var Minute = D(time.Minute)
+
+func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
+	var s string
+	if err := node.Decode(&s); err != nil {
+		return err
+	}
+	dur, err := parseDuration(s)
+	if err != nil {
+		return fmt.Errorf("bad duration %q: %w", s, err)
+	}
+	*d = D(dur)
+	return nil
+}
+
+func parseDuration(s string) (time.Duration, error) {
+	if n, ok := strings.CutSuffix(s, "d"); ok {
+		days, err := strconv.ParseFloat(n, 64)
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(days * 24 * float64(time.Hour)), nil
+	}
+	return time.ParseDuration(s)
+}
+
+type Config struct {
+	Root string
+	Listen string
+
+	Timeouts struct {
+		Git Duration
+		Refresh struct {
+			Default Duration
+			Max Duration
+			Jitter struct {
+				Max Duration
+				Min Duration
+			}
+		}
+	}
+
+	//HttpCert string		`yaml:"https:cert"`
+	//HttpKey string		`yaml:"https:key"`
+}
+
+func main() {
+	var listen, root, configFile string
+
+	flag.StringVar(&listen, "listen", "", "Override the bind port and address")
+	flag.StringVar(&root, "root", "", "Override the document root")
+	flag.StringVar(&configFile, "config", "gitbox.yml", "Override the config YAML file")
 	flag.Parse()
 
-	root, err := expandPath(root)
+	log.Printf("Starting gitbox " + gitboxVersion)
+
+	configData, err := os.ReadFile(configFile)
+	if err != nil {
+		log.Fatalf("Could not read config: %v", err)
+	}
+
+	config := Config {
+		Root: ".",
+		Listen: ":8080",
+	}
+	config.Timeouts.Git = 10 * Minute
+	config.Timeouts.Refresh.Default = 12 * Hour
+	config.Timeouts.Refresh.Max = 20 * 24 * Hour
+	config.Timeouts.Refresh.Jitter.Min = 20 * Minute
+	config.Timeouts.Refresh.Jitter.Max = 70 * Minute
+
+	if err := yaml.Unmarshal(configData, &config); err != nil {
+		log.Fatalf("Could not read YAML: %v", err)
+	}
+	log.Printf("Config read")
+
+	if root != "" {
+		config.Root = root
+	}
+	if listen != "" {
+		config.Listen = listen
+	}
+
+	if config.Timeouts.Refresh.Jitter.Max < config.Timeouts.Refresh.Jitter.Min {
+		log.Fatal("Error: min jitter > max jitter")
+	}
+	if config.Timeouts.Refresh.Default > config.Timeouts.Refresh.Max {
+		log.Fatal("Error: default repo refresh time > max refresh time")
+	}
+
+	root, err = expandPath(root)
 
 	if err != nil {
 		log.Fatal(err)
@@ -564,8 +681,6 @@ func main() {
 	html400 = []byte(strings.Replace(string(html400), "__GITBOX_VERSION", gitboxVersion, -1))
 	html404 = []byte(strings.Replace(string(html404), "__GITBOX_VERSION", gitboxVersion, -1))
 	html500 = []byte(strings.Replace(string(html500), "__GITBOX_VERSION", gitboxVersion, -1))
-
-	log.Printf("Starting gitbox " + gitboxVersion)
 
 	gitdir, err := exec.Command("git", "--exec-path").Output()
 
@@ -577,12 +692,11 @@ func main() {
 
 	h := &handler {
 		root: root,
-		gitTimeout: time.Minute * 5,	
-		defaultRefresh: time.Hour * 12,
-		maxRefresh: time.Hour * 24 * 20,
-		minJitter: 20,
-		maxJitter: 50,
-		jitterUnit: time.Minute,
+		gitTimeout: config.Timeouts.Git.D(),	
+		defaultRefresh: config.Timeouts.Refresh.Default.D(),
+		maxRefresh: config.Timeouts.Refresh.Max.D(),
+		minJitter: config.Timeouts.Refresh.Jitter.Min.D(),
+		maxJitter: config.Timeouts.Refresh.Jitter.Max.D(),
 		git: &cgi.Handler {
 			Path: backend,
 			Dir: root,
@@ -593,15 +707,14 @@ func main() {
 		},
 	}
 
-	// Populates h.repos from file system
-	h.walkRepos()
+	repos := h.walkRepos()
 
-	for r := range h.repos {
+	for r := range repos {
 		go h.refresher(r)
 	}
 
 	serv := &http.Server {
-		Addr: ":" + port,
+		Addr: config.Listen,
 		Handler: h,
 		ReadTimeout: 10 * time.Second,
 		WriteTimeout: 10 * time.Minute,

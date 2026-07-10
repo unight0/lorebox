@@ -1,0 +1,19 @@
+
+root: "."
+listen: ":8080"
+timeouts:
+  git: 5m
+  refresh:
+    default: 12h
+    max: 20d
+    jitter:
+      min: 20m
+      max: 50m
+
+tokens:
+  - "pt-39fa:bja03j0202"
+
+#https:
+# cert: "fullchain.pem"
+# key: "key.pem"
+

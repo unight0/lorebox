@@ -9,6 +9,7 @@ import (
 	"log"
 	"fmt"
 	"bufio"
+	"time"
 	"path/filepath"
 )
 
@@ -48,6 +49,21 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 		<th>Last modified</th>
 		<th>Name</th>
 	</tr>`)
+
+	// Inject /repos.txt
+	if path == "/" {
+		bw.WriteString(fmt.Sprintf(
+				`<tr>
+					<td>**********</td>
+					<td>No</td>
+					<td>%s</td>
+					<td><a href="%s">%s</a></td>
+				</tr>`,
+				time.Now().Format("2006-01-02 15:04:05"),
+				"/repos.txt",
+				"repos.txt",
+		))
+	}
 
 	for _, e := range entries {
 		dir := "No"

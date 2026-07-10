@@ -483,6 +483,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	svc := req.URL.Query().Get("service")
 
+	// Always has to be available
+	if req.Method == "GET" && req.URL.Path == "/robots.txt" {
+		h.serveRobots(w)
+		return
+	}
+
 	if h.auth == "all" {
 		id, token, ok := req.BasicAuth()
 		if !ok || !h.validateCredentials(id, token) {
@@ -491,10 +497,16 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	if req.Method == "GET" && req.URL.Path == "/repos.txt" {
+		h.serveRepoIndex(w)
+		return
+	}
+
 	if req.Method == "GET" && strings.HasPrefix(req.URL.Path, "/-/") {
-		//if !h.requireAuth(w, req) {
-		//	return
-		//}
+		if !h.requireAuth(w, req) {
+			log.Printf("Invalid auth")
+			return
+		}
 		// Prevent cross-site nastiness
 		if req.Header.Get("X-Gitbox-Api") != "On" {
 			log.Printf("Valid auth, but no X-Gitbox-Api header")
@@ -771,6 +783,7 @@ func usage() {
 	fmt.Printf("status          Query box status\n")
 	fmt.Printf("evict <repo>    Evict (delete) a repo\n")
 	fmt.Printf("refresh <repo>  Refresh a repo\n")
+	fmt.Printf("fetch <remote>  Cache remote repo\n")
 	fmt.Printf("refresh-all     Refresh all repos on a box\n")
 	fmt.Printf("list            List all cached repos on a box\n")
 	fmt.Printf("Options:\n")
@@ -789,32 +802,8 @@ func usage() {
 	fmt.Printf("  -listen       Override the bind port and address\n")
 	fmt.Printf("  -root         Override the document (git database) root\n")
 	fmt.Printf("  -config       Point to the config YAML file\n")
+	fmt.Printf("  -insecure     Use HTTP instead of HTTPS\n")
 	fmt.Printf("  -help         Options help\n")
-}
-
-type ClientConfig struct {
-	Default string
-	Tokens map[string]string
-}
-
-type clientContext struct {
-	box, id, token, proto string
-}
-
-func (c *clientContext) status() {
-	http.Get()
-}
-
-func (c *clientContext) list() {
-}
-
-func (c *clientContext) refresh() {
-}
-
-func (c *clientContext) refreshAll() {
-}
-
-func (c *clientContext) evict() {
 }
 
 func client() {
@@ -823,9 +812,10 @@ func client() {
 	var insecure bool
 
 	flag.StringVar(&box, "box", "", "Override the remote box")
-	flag.StringVar(&configFile, "", "", "Point to the client config YAML file")
+	flag.StringVar(&configFile, "client", "~/.config/gitbox/client.yml", "Point to the client config YAML file")
 	flag.StringVar(&auth, "auth", "", "Override auth token")
-	flag.BoolVar(&insecure, "insecure", "", "Connect over HTTP instead of HTTPS")
+	flag.BoolVar(&insecure, "insecure", false, "Connect over HTTP instead of HTTPS")
+
 	if err := flag.CommandLine.Parse(os.Args[2:]); err != nil {
 		log.Fatal(err)
 	}
@@ -833,7 +823,30 @@ func client() {
 	var configData []byte
 	if configFile != "" {
 		var err error
+
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		configFile = strings.Replace(configFile, "~/", home+"/", -1)
+
+		configFile, err = filepath.Abs(configFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		info, err := os.Stat(configFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		if info.Mode().Perm() ^ 0600 != 0 {
+			log.Fatalf("Cannot use '%s' as config file: permissions must be set to 0600", configFile)
+		}
+
 		configData, err = os.ReadFile(configFile)
+
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -854,21 +867,14 @@ func client() {
 	}
 
 	if auth == "" {
-		if token, ok := config.Tokens[box]; !ok {
+		if token, ok := config.Tokens[box]; ok {
 			auth = token
 		}
 	}
 
-	substr := strings.Split(auth, ":")
-
-	if len(substr) != 2 {
-		log.Fatalf("Invalid token syntax: '%s', must be of form <id>:<token>", auth)
-	}
-
 	cl := clientContext{
 		box: box,
-		id: substr[0],
-		token: substr[1], 
+		auth: auth,
 		proto: "https",
 	}
 
@@ -878,10 +884,28 @@ func client() {
 
 	switch os.Args[1] {
 	case "evict":
+		if len(flag.Args()) != 1 {
+			fmt.Printf("Evict requires exactly 1 argument\n")
+			usage()
+			return
+		}
 		cl.evict()
 		return
 	case "refresh":
+		if len(flag.Args()) != 1 {
+			fmt.Printf("Refresh requires exactly 1 argument\n")
+			usage()
+			return
+		}
 		cl.refresh()
+		return
+	case "fetch":
+		if len(flag.Args()) != 1 {
+			fmt.Printf("Fetch requires exactly 1 argument\n")
+			usage()
+			return
+		}
+		cl.fetch()
 		return
 	case "refresh-all":
 		cl.refreshAll()
@@ -910,25 +934,23 @@ func main() {
 
 
 	switch os.Args[1] {
-	case "status", "evict", "refresh", "refresh-all", "list":
-		client()
-		return
 	case "gen-token":
 		generateCredentials()
 		return
 	case "serve":
 		break
 	default:
-		fmt.Printf("Unknown command verb: %v\n", os.Args[1])
-		usage()
+		client()
 		return
 	}
 
 	var listen, root, configFile string
+	var insecure bool
 
 	flag.StringVar(&listen, "listen", "", "Override the bind port and address")
 	flag.StringVar(&root, "root", "", "Override the document root")
 	flag.StringVar(&configFile, "config", "", "Point to the config YAML file")
+	flag.BoolVar(&insecure, "insecure", false, "Point to the config YAML file")
 	if err := flag.CommandLine.Parse(os.Args[2:]); err != nil {
 		log.Fatal(err)
 	}
@@ -1048,7 +1070,7 @@ func main() {
 		MaxHeaderBytes: 10 * 1024,
 	}
 
-	if config.Https.Key != "" {
+	if config.Https.Key != "" && !insecure {
 		kpr, err := NewKeypairReloader(config.Https.Certificate, config.Https.Key)
 
 		if err != nil {

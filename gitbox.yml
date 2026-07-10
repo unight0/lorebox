@@ -17,7 +17,7 @@ listen: "127.0.0.1:8080"
 # all -- need auth for any action
 # new -- need auth only for fetching new (uncached) repos
 # none -- no auth. Dangerous, don't use unless you know what you are doing
-auth: "none"
+auth: "new"
 
 # Time syntax:
 # Xd, Xh, Xm, Xs -- X days, hours, minutes, seconds

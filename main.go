@@ -17,9 +17,12 @@ import (
 	"flag"
 	"errors"
 	"strconv"
+	"encoding/base64"
 	"go.yaml.in/yaml/v4"
-	_ "embed"
+	"crypto/sha256"
 	sn "golang.org/x/sync/singleflight"
+	cr "crypto/rand"
+	_ "embed"
 )
 
 type handler struct {
@@ -27,6 +30,7 @@ type handler struct {
 	gitTimeout, defaultRefresh, maxRefresh, minJitter, maxJitter time.Duration
 	git *cgi.Handler
 	fetchGroup sn.Group
+	tokens map[string]string
 }
 
 const gitboxVersion = "v0.2"
@@ -360,8 +364,25 @@ func (h *handler) fetchRepo(repo string) bool {
 	return success.(bool)
 }
 
-func (h *handler) validateCredentials(login, pass string) bool {
-	log.Printf("Validating %s:%s", login, pass)
+func (h *handler) validateCredentials(id, token string) bool {
+	log.Printf("Validating %s", id)
+
+	hash := sha256.Sum256([]byte(token))
+	enHash := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	servHash, ok := h.tokens[id]
+
+	if !ok {
+		log.Printf("Unknown token id %s", id)
+		return false
+	}
+
+	if enHash != servHash {
+		log.Printf("Hash doesn't match: %s", id)
+		return false
+	}
+
+	log.Printf("%s validated", id)
 	return true
 }
 
@@ -389,8 +410,8 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 		if hasPostfix(path, infoRefs) {
 			repo := chopInfoRefs(relpath)
 
-			login, pass, ok := req.BasicAuth()
-			if !ok || !h.validateCredentials(login, pass) {
+			id, token, ok := req.BasicAuth()
+			if !ok || !h.validateCredentials(id, token) {
 				h.serve401(w)
 				return
 			}
@@ -429,8 +450,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		if _, err := os.Stat(h.root + repo); err != nil {
 
-			login, pass, ok := req.BasicAuth()
-			if !ok || !h.validateCredentials(login, pass) {
+			id, token, ok := req.BasicAuth()
+			if !ok || !h.validateCredentials(id, token) {
 				h.serve401(w)
 				return
 			}
@@ -624,23 +645,63 @@ type Config struct {
 		}
 	}
 
+	Tokens []string
+
 	//HttpCert string		`yaml:"https:cert"`
 	//HttpKey string		`yaml:"https:key"`
 }
 
+func generateCredentials() {
+	token := make([]byte, 32)
+	tokenId := make([]byte, 4)
+
+	_, err := cr.Read(token)
+	if err != nil {
+		log.Fatalf("Could not generate token: %v", err)
+	}
+
+	_, err = cr.Read(tokenId)
+	if err != nil {
+		log.Fatalf("Could not generate token id: %v", err)
+	}
+
+	enToken := base64.RawURLEncoding.EncodeToString(token)
+	enTokenId := "id-" + base64.RawURLEncoding.EncodeToString(tokenId)
+
+	// No need for salt, token is already completely random
+	hash := sha256.Sum256([]byte(enToken))
+	enHash := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	fmt.Printf("Successfully generated token credentials\n")
+	fmt.Printf("Public (server) component:\n%s:%s\n\n", enTokenId, enHash)
+	fmt.Printf("Private component:\n%s:%s\n", enTokenId, enToken)
+}
+
 func main() {
 	var listen, root, configFile string
+	var genToken bool
 
 	flag.StringVar(&listen, "listen", "", "Override the bind port and address")
 	flag.StringVar(&root, "root", "", "Override the document root")
-	flag.StringVar(&configFile, "config", "gitbox.yml", "Override the config YAML file")
+	flag.StringVar(&configFile, "config", "", "Point to the config YAML file")
+	flag.BoolVar(&genToken, "gen-token", false, "Generate authentication credentials")
 	flag.Parse()
+
+	if genToken {
+		generateCredentials()
+		return
+	}
 
 	log.Printf("Starting gitbox " + gitboxVersion)
 
-	configData, err := os.ReadFile(configFile)
-	if err != nil {
-		log.Fatalf("Could not read config: %v", err)
+	var configData []byte
+	var err error
+
+	if configFile != "" {
+		configData, err = os.ReadFile(configFile)
+		if err != nil {
+			log.Fatalf("Could not read config: %v", err)
+		}
 	}
 
 	config := Config {
@@ -705,6 +766,17 @@ func main() {
 				"GIT_HTTP_EXPORT_ALL=1",
 			},
 		},
+	}
+
+	h.tokens = map[string]string{}
+	for _, t := range config.Tokens {
+		parts := strings.Split(t, ":")
+
+		if len(parts) != 2 || len(parts[0]) == 0 || len(parts[1]) == 0 {
+			log.Fatalf("Invalid token syntax: %s, expected something of form <id>:<hash>", t)
+		}
+
+		h.tokens[parts[0]] = parts[1]
 	}
 
 	repos := h.walkRepos()

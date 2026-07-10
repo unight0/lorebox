@@ -1,3 +1,5 @@
+# gitbox.yml
+# The singular and only config file for gitbox
 
 # Root directory for storing repositories
 root: "."

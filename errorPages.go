@@ -1,0 +1,70 @@
+package main
+
+import (
+	"log"
+	"net/http"
+	_ "embed"
+)
+
+//go:embed html/400.html
+var html400 []byte
+//go:embed html/401.html
+var html401 []byte
+//go:embed html/404.html
+var html404 []byte
+//go:embed html/500.html
+var html500 []byte
+//go:embed html/generic-begin.html
+var htmlGenericBegin []byte
+//go:embed html/generic-end.html
+var htmlGenericEnd []byte
+
+// Doesn't exist
+func (h *handler) serve404(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(404)
+
+	_, err := w.Write(html404)
+
+	if err != nil {
+		log.Printf("404 write: %v", err)
+	}
+}
+
+// Client error; invalid request
+func (h *handler) serve400(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(400)
+
+	_, err := w.Write(html400)
+
+	if err != nil {
+		log.Printf("400 write: %v", err)
+	}
+}
+
+// Authentication requred 
+func (h *handler) serve401(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("WWW-Authenticate", "Basic realm=\"gitbox\"")
+	w.WriteHeader(401)
+
+	_, err := w.Write(html401)
+
+	if err != nil {
+		log.Printf("401 write: %v", err)
+	}
+}
+
+// Internal server error
+func (h *handler) serve500(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(500)
+
+	_, err := w.Write(html500)
+
+	if err != nil {
+		log.Printf("500 write: %v", err)
+	}
+}
+

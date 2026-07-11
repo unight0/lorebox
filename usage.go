@@ -21,12 +21,14 @@ func usage() {
 	fmt.Printf("  -auth             Override auth token (syntax <id>:<token>)\n")
 	fmt.Printf("  -config           Point to the client config YAML file\n")
 	fmt.Printf("  -insecure         Connect over HTTP instead of HTTPS\n")
-	fmt.Printf("  -help             Options help\n\n")
+	fmt.Printf("  -help             Options help\n")
 
-	fmt.Printf("Utilities:\n")
-	fmt.Printf("gen-token       Generate access token credentials\n\n")
+	fmt.Printf("\nUtilities:\n")
+	fmt.Printf("gen-token       Generate access token credentials\n")
+	fmt.Printf("register        Register gitbox as authenticator for your git boxes with git\n")
+	fmt.Printf("credential get  Credential helper for git, not for manual use\n")
 
-	fmt.Printf("Server:\n")
+	fmt.Printf("\nServer:\n")
 	fmt.Printf("serve           Run the gitbox server\n")
 	fmt.Printf("Options:\n")
 	fmt.Printf("  -listen       Override the bind port and address\n")

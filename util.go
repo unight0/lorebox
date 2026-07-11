@@ -23,7 +23,7 @@ func chopInfoRefs(path string) string {
 }
 
 func (h *handler) chopRoot(path string) string {
-	if strings.HasPrefix(path, filepath.Clean(h.root + "/")) {
+	if strings.HasPrefix(path, filepath.Clean(h.root) + "/") {
 		path = path[len(h.root):]
 	}
 	return path
@@ -53,7 +53,7 @@ func parseDiskSize(size string) int64 {
 		return int64(kilo * 1024)
 	}
 
-	bytes, err := strconv.Atoi(size[:len(size)-1])
+	bytes, err := strconv.Atoi(size)
 	if err != nil {
 		log.Fatalf("Could not parse '%s': %v", size, err)
 	}

@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"sync"
 	"sort"
+	"bufio"
+	"context"
 	"errors"
 	"encoding/base64"
 	"go.yaml.in/yaml/v4"
@@ -31,7 +33,7 @@ type handler struct {
 	gitTimeout, defaultRefresh, maxRefresh, minJitter, maxJitter time.Duration
 	git *cgi.Handler
 	fetchGroup sn.Group
-	tokens map[string]string
+	tokens map[string]tokenInfo
 	repos map[string]repoDescription
 	reposLock sync.RWMutex
 	startup time.Time
@@ -40,18 +42,26 @@ type handler struct {
 	diskUsagePolicy string
 }
 
+type tokenInfo struct {
+	hash string
+	level string
+}
+
 type repoDescription struct {
 	repo string
 	size int64
 	lastErr time.Time
+	cancelRefresher func()
 }
 
 const gitboxVersion = "v0.3"
 	
 var infoRefs = "/info/refs"
 
-func refreshDefaultBranch(path string) bool {
-	cmd := exec.Command("git", "ls-remote", "--symref", "origin", "HEAD")
+func (h *handler) refreshDefaultBranch(path string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--symref", "origin", "HEAD")
 	cmd.Dir = path
 
 	out, err := cmd.Output()
@@ -83,7 +93,9 @@ func refreshDefaultBranch(path string) bool {
 		return false
 	}
 
-	cmd = exec.Command("git", "symbolic-ref", "HEAD", "refs/heads/" + ref)
+	ctx, cancel = context.WithTimeout(context.Background(), h.gitTimeout)
+	defer cancel()
+	cmd = exec.CommandContext(ctx, "git", "symbolic-ref", "HEAD", "refs/heads/" + ref)
 	cmd.Dir = path
 
 	if err := cmd.Run(); err != nil {
@@ -109,9 +121,11 @@ func (h *handler) getRepos() map[string]repoDescription {
 
 func (h *handler) refreshRepo(path string, logg *log.Logger) bool {
 	// Non-critical if fails
-	refreshDefaultBranch(path)
+	h.refreshDefaultBranch(path)
 
-	cmd := exec.Command("git", "fetch", "--prune", "origin")
+	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "fetch", "--prune", "origin")
 	cmd.Stdout = logg.Writer()
 	cmd.Stderr = logg.Writer()
 	cmd.Dir = path
@@ -121,7 +135,7 @@ func (h *handler) refreshRepo(path string, logg *log.Logger) bool {
 		return false
 	}
 
-	updRes := updateServerInfo(path, logg)
+	updRes := h.updateServerInfo(path, logg)
 
 	return h.applyDiskUsagePolicy(logg) && updRes
 }
@@ -137,6 +151,11 @@ func (h *handler) evictRepo(repo string, logg *log.Logger) bool {
 	}
 	h.reposLock.RUnlock()
 
+	if h.repoPinned(repo, logg) {
+		logg.Printf("Can't evict %s: repo pinned, unpin first", repo)
+		return false
+	}
+
 	h.reposLock.Lock()
 	defer h.reposLock.Unlock()
 
@@ -150,9 +169,11 @@ func (h *handler) evictRepo(repo string, logg *log.Logger) bool {
 	return true
 }
 
-func configureNewRepo(path string, logg *log.Logger) bool {
+func (h *handler) configureNewRepo(path string, logg *log.Logger) bool {
 	// Config for the future, so git doesn't lose refs/gitbox/*
-	cmd := exec.Command("git", "config", "--unset", "remote.origin.mirror")
+	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "config", "--unset", "remote.origin.mirror")
 	cmd.Dir = path
 	cmd.Stdout = logg.Writer()
 	cmd.Stderr = logg.Writer()
@@ -162,7 +183,9 @@ func configureNewRepo(path string, logg *log.Logger) bool {
 		return false
 	}
 
-	cmd = exec.Command("git", "config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/heads/*")
+	ctx, cancel = context.WithTimeout(context.Background(), h.gitTimeout)
+	defer cancel()
+	cmd = exec.CommandContext(ctx, "git", "config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/heads/*")
 	cmd.Dir = path
 	cmd.Stdout = logg.Writer()
 	cmd.Stderr = logg.Writer()
@@ -172,7 +195,9 @@ func configureNewRepo(path string, logg *log.Logger) bool {
 		return false
 	}
 
-	cmd = exec.Command("git", "config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*")
+	ctx, cancel = context.WithTimeout(context.Background(), h.gitTimeout)
+	defer cancel()
+	cmd = exec.CommandContext(ctx, "git", "config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*")
 	cmd.Dir = path
 	cmd.Stdout = logg.Writer()
 	cmd.Stderr = logg.Writer()
@@ -185,8 +210,10 @@ func configureNewRepo(path string, logg *log.Logger) bool {
 	return true
 }
 
-func updateServerInfo(path string, logg *log.Logger) bool {
-	cmd := exec.Command("git", "update-server-info")
+func (h *handler) updateServerInfo(path string, logg *log.Logger) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "update-server-info")
 	cmd.Dir = path
 	cmd.Stdout = logg.Writer()
 	cmd.Stderr = logg.Writer()
@@ -221,16 +248,15 @@ func dirSize(path string) (size int64, err error) {
 	return
 }
 
-func (h *handler) diskUsageExceeded(logg *log.Logger) bool {
-	totalSize, err := dirSize(h.root)
-
-	if err != nil {
-		logg.Printf("Failed to check disk usage: %v", err)
-		// Assume doesn't exceed
-		return false
+func (h *handler) totalRepoSize() (size int64) {
+	for _, d := range h.repos {
+		size += d.size
 	}
+	return
+}
 
-	return totalSize >= h.maxDiskUsage
+func (h *handler) diskUsageExceeded() bool {
+	return h.totalRepoSize() >= h.maxDiskUsage
 }
 
 func (h *handler) LRU(logg *log.Logger) bool {
@@ -241,37 +267,38 @@ func (h *handler) LRU(logg *log.Logger) bool {
 		return true
 	}
 
-	index := map[time.Time]string{}
-	modTimes := make([]time.Time, 0, len(h.repos))
+	type index struct {
+		mt time.Time
+		path string
+	}
+
+	idx := make([]index, 0, len(h.repos))
 
 	for p := range h.repos {
 		acc := readAccess(p, logg)
-		index[acc] = p
-		modTimes = append(modTimes, acc)
+		idx = append(idx, index{acc, p})
 	}
 
-	sort.Slice(modTimes, func (i, j int) bool {
-		return modTimes[i].Before(modTimes[j])
+	sort.Slice(idx, func (i, j int) bool {
+		return idx[i].mt.Before(idx[j].mt)
 	})
 
 	// Delete until have enough space/only pinned repos left
-	for _, t := range modTimes {
-		if !h.diskUsageExceeded(logg) {
+	for _, i := range idx { 
+		if !h.diskUsageExceeded() {
 			break
 		}
 
-		path := index[t]
-
-		repo := h.repos[path].repo
+		repo := h.repos[i.path].repo
 
 		if h.repoPinned(repo, logg) {
 			logg.Printf("Can't LRU evict %s: repo is pinned", repo)
 			continue
 		}
 
-		delete(h.repos, path)
+		delete(h.repos, i.path)
 
-		if err := os.RemoveAll(path); err != nil {
+		if err := os.RemoveAll(i.path); err != nil {
 			logg.Printf("Couldn't LRU evict %s: %v", repo, err)
 			continue
 		}
@@ -279,7 +306,7 @@ func (h *handler) LRU(logg *log.Logger) bool {
 		logg.Printf("Evicted %s because of disk usage", repo)
 	}
 
-	if h.diskUsageExceeded(logg) {
+	if h.diskUsageExceeded() {
 		logg.Printf("Disk usage is exceeded, but only pinned repos are left")
 		return false
 	}
@@ -303,7 +330,9 @@ func readAccess(path string, logg *log.Logger) time.Time {
 func (h *handler) pinRepo(repo string, logg *log.Logger) bool {
 	path := filepath.Clean(h.root + "/" + repo)
 
-	cmd := exec.Command("git", "config", "gitbox.pinned", "true")
+	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "config", "gitbox.pinned", "true")
 	cmd.Stderr = logg.Writer()
 	cmd.Stdout = logg.Writer()
 	cmd.Dir = path
@@ -319,7 +348,9 @@ func (h *handler) pinRepo(repo string, logg *log.Logger) bool {
 func (h *handler) unpinRepo(repo string, logg *log.Logger) bool {
 	path := filepath.Clean(h.root + "/" + repo)
 
-	cmd := exec.Command("git", "config", "--unset", "gitbox.pinned")
+	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "config", "--unset", "gitbox.pinned")
 	cmd.Stderr = logg.Writer()
 	cmd.Stdout = logg.Writer()
 	cmd.Dir = path
@@ -335,7 +366,9 @@ func (h *handler) unpinRepo(repo string, logg *log.Logger) bool {
 func (h *handler) repoPinned(repo string, logg *log.Logger) bool {
 	path := filepath.Clean(h.root + "/" + repo)
 
-	cmd := exec.Command("git", "config", "--bool", "gitbox.pinned")
+	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "config", "--bool", "gitbox.pinned")
 	cmd.Dir = path
 
 	err := cmd.Run()
@@ -377,7 +410,7 @@ func recordAccess(path string, logg *log.Logger) {
 }
 
 func (h *handler) applyDiskUsagePolicy(logg *log.Logger) bool {
-	if h.diskUsageExceeded(logg) {
+	if h.diskUsageExceeded() {
 		logg.Printf("Max disk usage exceeded")
 		switch h.diskUsagePolicy {
 		case "deny":
@@ -406,7 +439,9 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger) bool {
 		// TODO: timeouts
 
 		// First just ls...
-		cmd := exec.Command("git", "ls-remote", "--exit-code", url)
+		ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
+	defer cancel()
+		cmd := exec.CommandContext(ctx, "git", "ls-remote", "--exit-code", url)
 
 		if err := cmd.Run(); err != nil {
 			logg.Printf("Failed to ls-remote '%s': %v", url, err)
@@ -415,7 +450,9 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger) bool {
 
 		path := filepath.Clean(h.root + "/" + repo)
 
-		cmd = exec.Command("git", "clone", "--mirror", url, path)
+		ctx, cancel = context.WithTimeout(context.Background(), h.gitTimeout)
+	defer cancel()
+		cmd = exec.CommandContext(ctx, "git", "clone", "--mirror", url, path)
 		cmd.Dir = h.root
 		cmd.Stdout = logg.Writer()
 		cmd.Stderr = logg.Writer()
@@ -425,11 +462,11 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger) bool {
 			return false, nil
 		}
 
-		if !configureNewRepo(path, logg) {
+		if !h.configureNewRepo(path, logg) {
 			return false, nil
 		}
 
-		if !updateServerInfo(path, logg) {
+		if !h.updateServerInfo(path, logg) {
 			return false, nil
 		}
 
@@ -441,14 +478,18 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger) bool {
 
 		recordAccess(path, logg)
 
+		ctx, cancel = context.WithCancel(context.Background())
+		defer cancel()
+
 		h.reposLock.Lock()
 		h.repos[path] = repoDescription {
 			repo: repo,
 			size: size,
+			cancelRefresher: cancel,
 		}
 		h.reposLock.Unlock()
 		
-		go h.refresher(path)
+		go h.refresher(ctx, path)
 
 		return true, nil
 	})
@@ -456,21 +497,26 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger) bool {
 	return success.(bool)
 }
 
-func (h *handler) validateCredentials(id, token string) bool {
-	log.Printf("Validating %s", id)
+func (h *handler) validateCredentials(id, token string, admin bool) bool {
+	log.Printf("Validating '%s'", id)
 
 	hash := sha256.Sum256([]byte(token))
 	enHash := base64.RawURLEncoding.EncodeToString(hash[:])
 
-	servHash, ok := h.tokens[id]
+	servToken, ok := h.tokens[id]
 
 	if !ok {
-		log.Printf("Unknown token id %s", id)
+		log.Printf("Unknown token id '%s'", id)
 		return false
 	}
 
-	if enHash != servHash {
-		log.Printf("Hash doesn't match: %s", id)
+	if enHash != servToken.hash {
+		log.Printf("Hash doesn't match: '%s'", id)
+		return false
+	}
+
+	if admin && servToken.level != "admin" {
+		log.Printf("Doesn't have admin permissions: '%s'", id)
 		return false
 	}
 
@@ -479,10 +525,10 @@ func (h *handler) validateCredentials(id, token string) bool {
 }
 
 
-func (h *handler) requireAuth(w http.ResponseWriter, req *http.Request) bool {
+func (h *handler) requireAuth(w http.ResponseWriter, req *http.Request, admin bool) bool {
 	if h.auth != "none" {
 		id, token, ok := req.BasicAuth()
-		if !ok || !h.validateCredentials(id, token) {
+		if !ok || !h.validateCredentials(id, token, admin) {
 			h.serve401(w)
 			return false
 		}
@@ -502,7 +548,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if h.auth == "all" {
 		id, token, ok := req.BasicAuth()
-		if !ok || !h.validateCredentials(id, token) {
+		if !ok || !h.validateCredentials(id, token, false) {
 			h.serve401(w)
 			return
 		}
@@ -514,7 +560,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if req.Method == "GET" && strings.HasPrefix(req.URL.Path, "/-/") {
-		if !h.requireAuth(w, req) {
+		if !h.requireAuth(w, req, true) {
 			log.Printf("Invalid auth")
 			return
 		}
@@ -536,7 +582,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if _, err := os.Stat(h.root + repo); err != nil {
 
 			// Authenticate
-			if !h.requireAuth(w, req) {
+			if !h.requireAuth(w, req, false) {
 				return
 			}
 
@@ -664,10 +710,16 @@ func (h *handler) jitteredRefresh() time.Duration {
 	return h.defaultRefresh + h.minJitter + jitter
 }
 
-func (h *handler) refresher(path string) {
+func (h *handler) refresher(ctx context.Context, path string) {
 	duration := h.jitteredRefresh()
 
 	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("Refresher on %s is killed", path)
+			return
+		default:
+		}
 		time.Sleep(duration)
 
 		if !h.refreshRepo(path, log.Default()) {
@@ -750,7 +802,9 @@ type Config struct {
 		}
 	}
 
-	Tokens []string
+	Tokens []struct {
+		Id, Hash, Level string
+	}
 
 	Https struct {
 		Certificate string
@@ -788,12 +842,109 @@ func generateCredentials() {
 	fmt.Printf("# Public (server) component\n")
 	fmt.Printf("# Paste this into your gitbox.yml:\n")
 	fmt.Printf("tokens:\n")
-	fmt.Printf("- \"%s:%s\"\n\n", enTokenId, enHash)
+	fmt.Printf("  - id: \"%s\"\n", enTokenId)
+	fmt.Printf("  	hash: \"%s\"\n", enHash)
+	fmt.Printf("  	level: <select \"fetch\" or \"admin\">\n")
 
-	fmt.Printf("# Private component\n")
+	fmt.Printf("\n# Private component\n")
 	fmt.Printf("# Use this as user:pass when using git, e.g.:\n")
-	fmt.Printf("# git clone https://%s:%s@box.bob.net/alice.net/alice/repo\n\n", enTokenId, enToken)
-	fmt.Printf("%s:%s\n", enTokenId, enToken)
+	fmt.Printf("# git clone https://%s:%s@box.bob.net/alice.net/alice/repo\n", enTokenId, enToken)
+	fmt.Printf("# Or you can paste this into your ~/.config/gitbox/client.yml:\n")
+	fmt.Printf("tokens:\n")
+	fmt.Printf("  \"%s\": \"%s\"\n", enTokenId, enToken)
+	fmt.Printf("# Then run 'gitbox autoconf' to automatically configure your git client to use this token\n")
+
+	fmt.Printf("\n%s:%s\n", enTokenId, enToken)
+}
+
+func registerWithGit() {
+	config := ClientConfig{}
+
+	if err := yaml.Unmarshal(getConfigData(defaultConfigFile), &config); err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("Configuring your git client...\n")
+
+	if len(config.Tokens) == 0 {
+		fmt.Printf("No tokens configured for ~/.config/gitbox/client.yml")
+		return
+	}
+
+	gitbox, err := os.Executable()
+
+	if err != nil {
+		fmt.Printf("Couldn't obtain executable path of self: %v", err)
+		return
+	}
+
+	for host, _ := range config.Tokens {
+		fmt.Printf("Registering auth for %s...\n", host)
+
+		err = exec.Command("git", "config", "--global", "credential.http://" + host + ".helper", "!" + gitbox + " credential").Run()
+
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		fmt.Printf("    http success\n")
+
+		err = exec.Command("git", "config", "--global", "credential.https://" + host + ".helper", "!" + gitbox + " credential").Run()
+
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		fmt.Printf("    https success\n")
+	}
+
+	fmt.Printf("Done\n")
+}
+
+func credentialHelper() {
+	config := ClientConfig{}
+
+	if err := yaml.Unmarshal(getConfigData(defaultConfigFile), &config); err != nil {
+		log.Fatal(err)
+	}
+
+	// We need to stay silent unless answering the query
+
+	attrs := map[string]string{}
+
+	sc := bufio.NewScanner(os.Stdin)
+
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "" {
+			break
+		}
+		if k, v, ok := strings.Cut(line, "="); ok {
+			attrs[k] = v
+		}
+	}
+
+	if attrs["protocol"] != "https" && attrs["protocol"] != "http" {
+		return
+	}
+
+	host := attrs["host"]
+
+	if host == "" {
+		return
+	}
+
+	if token, ok := config.Tokens[host]; ok {
+		id, secret, ok := strings.Cut(token, ":")
+
+		if !ok {
+			return
+		}
+
+		fmt.Printf("username=%s\npassword=%s\n\n", id, secret)
+	}
+
+	return
 }
 
 func main() {
@@ -808,6 +959,16 @@ func main() {
 	switch os.Args[1] {
 	case "gen-token":
 		generateCredentials()
+		return
+	case "register":
+		registerWithGit()
+		return
+	case "credential":
+		if len(os.Args) < 3 || os.Args[2] != "get" {
+			usage()
+			return
+		}
+		credentialHelper()
 		return
 	case "serve":
 		break
@@ -877,12 +1038,12 @@ func main() {
 		log.Fatal("Error: specify _both_ the certificate and key to use HTTPS")
 	}
 	switch config.Disk.Policy {
-	case "lru", "deny", "proxy", "warn":
+	case "lru", "deny", "warn":
 	default:
-		log.Fatal("disk:policy: must be either 'lru', 'deny', 'warn', or 'proxy'")
+		log.Fatal("disk:policy: must be either 'lru', 'deny', or 'warn'")
 	}
 
-	root, err = expandPath(root)
+	root, err = expandPath(config.Root)
 
 	if err != nil {
 		log.Fatal(err)
@@ -892,7 +1053,9 @@ func main() {
 	html404 = []byte(strings.Replace(string(html404), "__GITBOX_VERSION", gitboxVersion, -1))
 	html500 = []byte(strings.Replace(string(html500), "__GITBOX_VERSION", gitboxVersion, -1))
 
-	gitdir, err := exec.Command("git", "--exec-path").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), config.Timeouts.Git.D())
+	defer cancel()
+	gitdir, err := exec.CommandContext(ctx, "git", "--exec-path").Output()
 
 	if err != nil {
 		log.Fatal(err)
@@ -923,22 +1086,35 @@ func main() {
 
 	h.startup = time.Now()
 
-	h.tokens = map[string]string{}
-	for _, t := range config.Tokens {
-		parts := strings.Split(t, ":")
+	h.tokens = map[string]tokenInfo{}
 
-		if len(parts) != 2 || len(parts[0]) == 0 || len(parts[1]) == 0 {
-			log.Fatalf("Invalid token syntax: %s, expected something of form <id>:<hash>", t)
+	for _, t := range config.Tokens {
+		if t.Id == "" || t.Hash == "" {
+			log.Fatalf("For each token, id:, hash:, and level: must be set")
 		}
 
-		h.tokens[parts[0]] = parts[1]
+		if t.Level == "" {
+			t.Level = "fetch"
+		}
+
+		if t.Level != "admin" && t.Level != "fetch" {
+			log.Fatalf("For each token, level: must be set to either 'fetch' or 'admin'")
+		}
+
+		h.tokens[t.Id] = tokenInfo {
+			t.Hash, t.Level,
+		}
 	}
 
 	// Populates h.repos
 	h.walkRepos()
 
 	for r := range h.repos {
-		go h.refresher(r)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		info := h.repos[r]
+		info.cancelRefresher = cancel
+		go h.refresher(ctx, r)
 	}
 
 	serv := &http.Server {

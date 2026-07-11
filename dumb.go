@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"html"
 	"os"
 	"errors"
 	"io"
@@ -22,6 +23,7 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 		return
 	}
 
+	w.Header().Set("Cache-Control", "public, max-age=60, no-transform")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(200)
 
@@ -66,6 +68,10 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 	}
 
 	for _, e := range entries {
+		if excludedRepoPath(filepath.Clean(path + "/" + e.Name())) {
+			continue
+		}
+
 		dir := "No"
 
 		if e.IsDir() {
@@ -95,7 +101,7 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 				dir,
 				modtime,
 				filepath.Clean(path + "/" + e.Name()),
-				name,
+				html.EscapeString(name),
 		))
 	}
 
@@ -104,12 +110,40 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 	bw.Flush()
 }
 
+func cacheableRepoPath(path string) bool {
+
+	if hasPostfix(path, "/HEAD") ||
+		hasPostfix(path, "/info/refs") ||
+		hasPostfix(path, "/objects/info/packs") {
+		return false
+	}
+
+	if strings.Contains(path, "/objects/") ||
+		strings.Contains(path, "pack-") {
+		return true
+	}
+
+	return false
+}
+
+func excludedRepoPath(path string) bool {
+	return hasPostfix(path, "/gitbox.access") ||
+		hasPostfix(path, "/config") ||
+		hasPostfix(path, "/description") ||
+		strings.Contains(path, "/hooks")	
+}
+
 func (h *handler) serveFile(w http.ResponseWriter, path string) {
 	abspath := filepath.Clean(h.root + path)
 
 	if hasPostfix(abspath, infoRefs) {
 		dirpath := chopInfoRefs(abspath)
 		recordAccess(dirpath, log.Default())
+	}
+
+	if excludedRepoPath(path) {
+		h.serve404(w)
+		return
 	}
 
 	file, err := os.Open(abspath)
@@ -127,6 +161,10 @@ func (h *handler) serveFile(w http.ResponseWriter, path string) {
 	}
 	defer file.Close()
 
+	w.Header().Set("Cache-Control", "public, max-age=60, no-transform")
+	if cacheableRepoPath(path) {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable, no-transform")
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
 
@@ -151,7 +189,7 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Outside of the root directory
-	if !strings.HasPrefix(path, filepath.Clean(h.root + "/")) {
+	if !strings.HasPrefix(path + "/", filepath.Clean(h.root) + "/") {
 		log.Printf("External path '%s' was requested", path)
 		h.serve400(w)
 		return
@@ -160,11 +198,17 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 	info, err := os.Stat(path)
 
 	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			fmt.Printf("Can't stat '%s': %v", path, err)
+			h.serve500(w)
+			return
+		}
+
 		if hasPostfix(path, infoRefs) {
 			repo := chopInfoRefs(relpath)
 
 			// Authenticate
-			if !h.requireAuth(w, req) {
+			if !h.requireAuth(w, req, false) {
 				return
 			}
 

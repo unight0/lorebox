@@ -46,7 +46,9 @@ disk:
 # Have form of <id>:<hash>
 # Create with gitbox -gen-token
 tokens:
-  - "id-XYv1wQ:xY3QH-S8usyQVIOIRfTU8q78DLKLNsI5fI9Lj3btGdA"
+  - id: "id-XYv1wQ"
+    hash: "xY3QH-S8usyQVIOIRfTU8q78DLKLNsI5fI9Lj3btGdA"
+    level: admin
 
 # Certificate and key to use for HTTPS. Obtain them from a provider like
 # Letsencrypt, etc. Please use absolute paths here for predictable behaviour

@@ -32,7 +32,7 @@ func (h *handler) apiList(w http.ResponseWriter) {
 	for _, d := range h.repos {
 		lastErr := fmt.Sprintf("%s", d.lastErr)
 		if d.lastErr.IsZero() {
-			lastErr = "(none recorded)"
+			lastErr = "-"
 		}
 		pinned := "No"
 		if h.repoPinned(d.repo, log.Default()) {
@@ -42,7 +42,7 @@ func (h *handler) apiList(w http.ResponseWriter) {
 		totalSize += d.size
 	}
 
-	bw.WriteString(fmt.Sprintf("Total %d bytes\n", totalSize))
+	bw.WriteString(fmt.Sprintf("Total %d bytes (%d kilobytes)\n", totalSize, totalSize/1024))
 
 	bw.Flush()
 }
@@ -124,7 +124,7 @@ func (h *handler) apiUnpin(w http.ResponseWriter, repo string) {
 	w.WriteHeader(200)
 
 	bw := bufio.NewWriter(w)
-	bw.Flush()
+	defer bw.Flush()
 
 	logg := log.New(bw, "", log.LstdFlags)
 
@@ -226,7 +226,7 @@ func (h *handler) api(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if strings.HasPrefix(req.URL.Path, "/-/unpin/") {
-		h.apiPin(w, req.URL.Path[len("/-/unpin"):])
+		h.apiUnpin(w, req.URL.Path[len("/-/unpin"):])
 		return
 	}
 

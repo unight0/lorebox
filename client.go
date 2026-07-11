@@ -3,6 +3,10 @@ package main
 import (
 	"net/http"
 	"encoding/base64"
+	"os"
+	"path/filepath"
+	"strings"
+	"go.yaml.in/yaml/v4"
 	"log"
 	"io"
 	"flag"
@@ -69,14 +73,6 @@ func (c *clientContext) simple(what string) {
 	fmt.Printf("%s", readBody(resp.Body))
 }
 
-func (c *clientContext) status() {
-	c.simple("status")
-}
-
-func (c *clientContext) list() {
-	c.simple("list")
-}
-
 func (c *clientContext) refreshAll() {
 	fmt.Printf("This may take a while -- please be patient...\n")
 
@@ -103,5 +99,135 @@ func (c *clientContext) fetch() {
 	repo := flag.Args()[0]
 
 	c.simple("fetch/" + repo)
+}
+
+const defaultConfigFile = "~/.config/gitbox/client.yml"
+
+func getConfigData(configFile string) (configData []byte) {
+	silenceNotExists := configFile == defaultConfigFile
+
+	if configFile != "" {
+		var err error
+
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		configFile = strings.Replace(configFile, "~/", home+"/", -1)
+
+		configFile, err = filepath.Abs(configFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		info, err := os.Stat(configFile)
+		if err != nil {
+			if silenceNotExists {
+				return
+			}
+			log.Fatal(err)
+		}
+
+		if info.Mode().Perm() ^ 0600 != 0 {
+			log.Fatalf("Cannot use '%s' as config file: permissions must be set to 0600", configFile)
+		}
+
+		configData, err = os.ReadFile(configFile)
+
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	return
+}
+
+func client() {
+
+	var configFile, auth, box string
+	var insecure bool
+
+	flag.StringVar(&box, "box", "", "Override the remote box")
+	flag.StringVar(&configFile, "client", defaultConfigFile, "Point to the client config YAML file")
+	flag.StringVar(&auth, "auth", "", "Override auth token")
+	flag.BoolVar(&insecure, "insecure", false, "Connect over HTTP instead of HTTPS")
+
+	if err := flag.CommandLine.Parse(os.Args[2:]); err != nil {
+		log.Fatal(err)
+	}
+
+	config := ClientConfig{}
+
+	if err := yaml.Unmarshal(getConfigData(configFile), &config); err != nil {
+		log.Fatal(err)
+	}
+
+	if box == "" && config.Default == "" {
+		log.Fatalf("Specify the box to connect to either via -box or 'default:' config key (config is in %s)", defaultConfigFile)
+	}
+
+	if box == "" {
+		box = config.Default
+	}
+
+	if auth == "" {
+		if token, ok := config.Tokens[box]; ok {
+			auth = token
+		}
+	}
+
+	cl := clientContext{
+		box: box,
+		auth: auth,
+		proto: "https",
+	}
+
+	if insecure {
+		cl.proto = "http"
+	}
+
+	switch os.Args[1] {
+	case "evict":
+		if len(flag.Args()) != 1 {
+			fmt.Printf("Evict requires exactly 1 argument\n")
+			usage()
+			return
+		}
+		cl.evict()
+		return
+	case "refresh":
+		if len(flag.Args()) != 1 {
+			fmt.Printf("Refresh requires exactly 1 argument\n")
+			usage()
+			return
+		}
+		cl.refresh()
+		return
+	case "fetch":
+		if len(flag.Args()) != 1 {
+			fmt.Printf("Fetch requires exactly 1 argument\n")
+			usage()
+			return
+		}
+		cl.fetch()
+		return
+	case "refresh-all":
+		cl.refreshAll()
+		return
+	case "list":
+		cl.simple("list")
+		return
+	case "status":
+		cl.simple("status")
+		return
+	case "effective-config":
+		cl.simple("effective-config")
+		return
+	default:
+		fmt.Printf("Unknown command verb: %v\n", os.Args[1])
+		usage()
+		return
+	}
+
 }
 

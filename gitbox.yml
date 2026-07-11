@@ -1,7 +1,8 @@
 # gitbox.yml
-# The singular and only config file for gitbox
+# The singular and only config file for gitbox server
 
 # Root directory for storing repositories
+# Please use an absolute path here for predictability purposes
 root: "."
 
 # Listen for incoming connections at host:port. No host/0.0.0.0 for any source
@@ -17,7 +18,7 @@ listen: "127.0.0.1:8080"
 # all -- need auth for any action
 # new -- need auth only for fetching new (uncached) repos
 # none -- no auth. Dangerous, don't use unless you know what you are doing
-auth: "new"
+auth: new
 
 # Time syntax:
 # Xd, Xh, Xm, Xs -- X days, hours, minutes, seconds
@@ -31,12 +32,25 @@ timeouts:
       min: 20m
       max: 50m
 
+disk:
+  # Maximum disk space gitbox will use
+  # Syntax: XG, XM, XK, X -- X gigabytes, megabytes, kilobytes, bytes
+  max: 10K
+  # What to do if maximum disk usage is reached. Possible options:
+  # lru -- enforce Least Recently Used eviction policy
+  # deny -- disallow further caching
+  # warn -- only log a warning
+  policy: lru
+
 # Authentication tokens
 # Have form of <id>:<hash>
 # Create with gitbox -gen-token
 tokens:
   - "id-XYv1wQ:xY3QH-S8usyQVIOIRfTU8q78DLKLNsI5fI9Lj3btGdA"
 
+# Certificate and key to use for HTTPS. Obtain them from a provider like
+# Letsencrypt, etc. Please use absolute paths here for predictable behaviour
+# independent from the location you run the binary from
 https:
  certificate: "cert.pem"
  key: "key.pem"

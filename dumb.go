@@ -105,7 +105,14 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 }
 
 func (h *handler) serveFile(w http.ResponseWriter, path string) {
-	file, err := os.Open(filepath.Clean(h.root + path))
+	abspath := filepath.Clean(h.root + path)
+
+	if hasPostfix(abspath, infoRefs) {
+		dirpath := chopInfoRefs(abspath)
+		recordAccess(dirpath, log.Default())
+	}
+
+	file, err := os.Open(abspath)
 
 	if err != nil {
 		log.Printf("error at os.Open(): %v", err)

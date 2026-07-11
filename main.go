@@ -10,13 +10,13 @@ import (
 	"log"
 	"fmt"
 	"time"
-	"bufio"
 	"os"
 	"os/exec"
 	"strings"
 	"flag"
 	"strconv"
 	"sync"
+	"sort"
 	"encoding/base64"
 	"go.yaml.in/yaml/v4"
 	"crypto/sha256"
@@ -35,6 +35,8 @@ type handler struct {
 	reposLock sync.RWMutex
 	startup time.Time
 	effectiveConfig *Config
+	maxDiskUsage int64
+	diskUsagePolicy string
 }
 
 type repoDescription struct {
@@ -91,7 +93,20 @@ func refreshDefaultBranch(path string) bool {
 	return true
 }
 
-func refreshRepo(path string, logg *log.Logger) bool {
+func (h *handler) getRepos() map[string]repoDescription {
+	h.reposLock.RLock()
+	defer h.reposLock.RUnlock()
+
+	repos := make(map[string]repoDescription)
+
+	for k, v := range h.repos {
+		repos[k] = v
+	}
+
+	return repos
+}
+
+func (h *handler) refreshRepo(path string, logg *log.Logger) bool {
 	// Non-critical if fails
 	refreshDefaultBranch(path)
 
@@ -105,7 +120,9 @@ func refreshRepo(path string, logg *log.Logger) bool {
 		return false
 	}
 
-	return updateServerInfo(path, logg)
+	updRes := updateServerInfo(path, logg)
+
+	return h.applyDiskUsagePolicy(logg) && updRes
 }
 
 func (h *handler) evictRepo(repo string, logg *log.Logger) bool {
@@ -203,9 +220,111 @@ func dirSize(path string) (size int64, err error) {
 	return
 }
 
+func (h *handler) diskUsageExceeded(logg *log.Logger) bool {
+	totalSize, err := dirSize(h.root)
+
+	if err != nil {
+		logg.Printf("Failed to check disk usage: %v", err)
+		// Assume doesn't exceed
+		return false
+	}
+
+	return totalSize >= h.maxDiskUsage
+}
+
+func (h *handler) LRU(logg *log.Logger) {
+	h.reposLock.Lock()
+	defer h.reposLock.Unlock()
+
+	if len(h.repos) == 0 {
+		return
+	}
+
+	index := map[time.Time]string{}
+	modTimes := make([]time.Time, 0, len(h.repos))
+
+	for p := range h.repos {
+		acc := readAccess(p, logg)
+		index[acc] = p
+		modTimes = append(modTimes, acc)
+	}
+
+	sort.Slice(modTimes, func (i, j int) bool {
+		return modTimes[i].Before(modTimes[j])
+	})
+
+	// Delete until have enough space
+	for h.diskUsageExceeded(logg) && len(modTimes) > 0 {
+		path := index[modTimes[0]]
+		delete(h.repos, path)
+		if err := os.RemoveAll(path); err != nil {
+			logg.Printf("Couldn't LRU evict '%s': %v", path, err)
+			continue
+		}
+		logg.Printf("Evicted '%s' because of disk usage", h.chopRoot(path))
+	}
+}
+
+func readAccess(path string, logg *log.Logger) time.Time {
+	accPath := filepath.Clean(path + "/gitbox.access")
+
+	info, err := os.Stat(accPath)
+
+	if err != nil {
+		logg.Printf("Could not read access for %s: %v", path, err)
+		return time.Now()
+	}
+
+	return info.ModTime()
+}
+
+func recordAccess(path string, logg *log.Logger) {
+	accPath := filepath.Clean(path + "/gitbox.access")
+
+	// Doesn't exist; touch
+	if _, err := os.Stat(accPath); err != nil {
+		f, err := os.OpenFile(accPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Printf("Could not create %s", accPath)
+			return
+		}
+		f.Close()
+	}
+
+	now := time.Now()
+	err := os.Chtimes(accPath, now, now)
+
+	if err != nil {
+		log.Printf("Could not update mtime on %s", accPath)
+		return
+	}
+}
+
+func (h *handler) applyDiskUsagePolicy(logg *log.Logger) bool {
+	if h.diskUsageExceeded(logg) {
+		logg.Printf("Max disk usage exceeded")
+		switch h.diskUsagePolicy {
+		case "deny":
+			logg.Printf("Repo fetch denied\n")
+			return false
+		case "warn":
+		case "lru":
+			h.LRU(logg)
+		default:
+			panic("Unknown disk usage policy")
+		}
+	}
+	return true
+}
+
 func (h *handler) fetchRepo(repo string, logg *log.Logger) bool {
 
 	success, _, _ := h.fetchGroup.Do(repo, func() (any, error) {
+	
+		if !h.applyDiskUsagePolicy(logg) {
+			return false, nil
+		}
+
 		url := "https:/" + repo
 
 		// TODO: timeouts
@@ -241,8 +360,10 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger) bool {
 		size, err := dirSize(path)
 
 		if err != nil {
-			logg.Printf("Failed to calculate directory size: %d", path)
+			logg.Printf("Failed to calculate directory size: %s", path)
 		}
+
+		recordAccess(path, logg)
 
 		h.reposLock.Lock()
 		h.repos[path] = repoDescription {
@@ -293,192 +414,6 @@ func (h *handler) requireAuth(w http.ResponseWriter, req *http.Request) bool {
 	return true
 }
 
-func (h *handler) apiList(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
-
-	bw := bufio.NewWriter(w)
-
-	h.reposLock.RLock()
-	defer h.reposLock.RUnlock()
-
-	var totalSize int64
-
-	bw.WriteString(fmt.Sprintf("Total %d repos\n", len(h.repos)))
-	bw.WriteString(fmt.Sprintf("% 36s % 16s % 28s\n",
-		"Repository",
-		"Size on disk",
-		"Last refresh error timestamp",
-	))
-
-	for _, d := range h.repos {
-		lastErr := fmt.Sprintf("%s", d.lastErr)
-		if d.lastErr.IsZero() {
-			lastErr = "(none recorded)"
-		}
-		bw.WriteString(fmt.Sprintf("% 36s %016d % 28s\n", d.repo, d.size, lastErr))
-		totalSize += d.size
-	}
-
-	bw.WriteString(fmt.Sprintf("Total %d bytes\n", totalSize))
-
-	bw.Flush()
-}
-
-func (h *handler) apiStatus(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
-
-	bw := bufio.NewWriter(w)
-
-	size, err := dirSize(h.root)
-	if err != nil {
-		log.Printf("Could not measure size of root dir")
-		return
-	}
-
-	bw.WriteString(fmt.Sprintf("gitbox server\nversion: %s\nuptime: %s\ntotal storage: %d\n",
-		gitboxVersion,
-		time.Now().Sub(h.startup),
-		size,
-	))
-
-	bw.Flush()
-}
-
-func (h *handler) apiEffectiveConfig(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
-
-	bw := bufio.NewWriter(w)
-	defer bw.Flush()
-
-	out, err := yaml.Marshal(h.effectiveConfig)
-
-	if err != nil {
-		bw.WriteString(fmt.Sprintf("Error: %w\n", err))
-		return
-	}
-
-	bw.Write(out)
-}
-
-func (h *handler) apiFetch(w http.ResponseWriter, repo string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
-
-	bw := bufio.NewWriter(w)
-	bw.Flush()
-
-	logg := log.New(bw, "", log.LstdFlags)
-
-	if h.fetchRepo(repo, logg) {
-		logg.Printf("Success\n")
-		return
-	}
-	
-	logg.Printf("Fail\n")
-}
-
-func (h *handler) apiRefresh(w http.ResponseWriter, repo string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
-
-	bw := bufio.NewWriter(w)
-	defer bw.Flush()
-
-	logg := log.New(bw, "", log.LstdFlags)
-
-	path := filepath.Clean(h.root + "/" + repo)
-
-	if refreshRepo(path, logg) {
-		logg.Printf("Success\n")
-		return
-	}
-
-	logg.Printf("Fail\n")
-}
-
-func (h *handler) apiRefreshAll(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
-
-	bw := bufio.NewWriter(w)
-	defer bw.Flush()
-
-	logg := log.New(bw, "", log.LstdFlags)
-
-	h.reposLock.RLock()
-	defer h.reposLock.RUnlock()
-
-	for path, d := range h.repos {
-		logg.Printf("Refreshing %s", d.repo)
-		if refreshRepo(path, logg) {
-			logg.Printf("Success\n")
-			continue
-		}
-		logg.Printf("Fail\n")
-	}
-
-}
-
-func (h *handler) apiEvict(w http.ResponseWriter, repo string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
-
-	bw := bufio.NewWriter(w)
-	defer bw.Flush()
-
-	logg := log.New(bw, "", log.LstdFlags)
-
-	if h.evictRepo(repo, logg) {
-		logg.Printf("Success\n")
-		return
-	}
-
-	logg.Printf("Fail\n")
-}
-
-func (h *handler) api(w http.ResponseWriter, req *http.Request) {
-	if req.URL.Path == "/-/list" {
-		h.apiList(w)
-		return
-	}
-
-	if req.URL.Path == "/-/status" {
-		h.apiStatus(w)
-		return
-	}
-
-	if req.URL.Path == "/-/effective-config" {
-		h.apiEffectiveConfig(w)
-		return
-	}
-
-	if req.URL.Path == "/-/refresh-all" {
-		h.apiRefreshAll(w)
-		return
-	}
-
-	if strings.HasPrefix(req.URL.Path, "/-/fetch/") {
-		h.apiFetch(w, req.URL.Path[len("/-/fetch"):])
-		return
-	}
-
-	if strings.HasPrefix(req.URL.Path, "/-/refresh/") {
-		h.apiRefresh(w, req.URL.Path[len("/-/refresh"):])
-		return
-	}
-
-	if strings.HasPrefix(req.URL.Path, "/-/evict/") {
-		h.apiEvict(w, req.URL.Path[len("/-/evict"):])
-		return
-	}
-
-	// Invalid API point
-	h.serve400(w)
-}
-
 func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	svc := req.URL.Query().Get("service")
@@ -521,6 +456,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.Method == "GET" && hasPostfix(req.URL.Path, infoRefs) && svc == "git-upload-pack"{
 		repo := chopInfoRefs(filepath.Clean("/" + req.URL.Path))
 
+		// Doesn't exist, so pull
 		if _, err := os.Stat(h.root + repo); err != nil {
 
 			// Authenticate
@@ -658,7 +594,7 @@ func (h *handler) refresher(path string) {
 	for {
 		time.Sleep(duration)
 
-		if !refreshRepo(path, log.Default()) {
+		if !h.refreshRepo(path, log.Default()) {
 			h.reposLock.Lock()
 			d := h.repos[path]
 			d.lastErr = time.Now()
@@ -699,10 +635,14 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 	}
 	dur, err := parseDuration(s)
 	if err != nil {
-		return fmt.Errorf("bad duration %q: %w", s, err)
+		return fmt.Errorf("bad duration %q: %v", s, err)
 	}
 	*d = D(dur)
 	return nil
+}
+
+func (d Duration) MarshalYAML() (any, error) {
+	return d.D().String(), nil
 }
 
 func parseDuration(s string) (time.Duration, error) {
@@ -740,6 +680,11 @@ type Config struct {
 		Certificate string
 		Key string
 	}
+
+	Disk struct {
+		Max string
+		Policy string
+	}
 }
 
 func generateCredentials() {
@@ -773,155 +718,6 @@ func generateCredentials() {
 	fmt.Printf("# Use this as user:pass when using git, e.g.:\n")
 	fmt.Printf("# git clone https://%s:%s@box.bob.net/alice.net/alice/repo\n\n", enTokenId, enToken)
 	fmt.Printf("%s:%s\n", enTokenId, enToken)
-}
-
-func usage() {
-	fmt.Printf("gitbox server and remote control panel\n")
-	fmt.Printf("Verbs:\n\n")
-
-	fmt.Printf("Remote control:\n")
-	fmt.Printf("status          Query box status\n")
-	fmt.Printf("evict <repo>    Evict (delete) a repo\n")
-	fmt.Printf("refresh <repo>  Refresh a repo\n")
-	fmt.Printf("fetch <remote>  Cache remote repo\n")
-	fmt.Printf("refresh-all     Refresh all repos on a box\n")
-	fmt.Printf("list            List all cached repos on a box\n")
-	fmt.Printf("Options:\n")
-	fmt.Printf("  -box          Override the remote box\n")
-	fmt.Printf("  -auth         Override auth token (syntax <id>:<token>)\n")
-	fmt.Printf("  -config       Point to the client config YAML file\n")
-	fmt.Printf("  -insecure     Connect over HTTP instead of HTTPS\n")
-	fmt.Printf("  -help         Options help\n\n")
-
-	fmt.Printf("Utilities:\n")
-	fmt.Printf("gen-token       Generate access token credentials\n\n")
-
-	fmt.Printf("Server:\n")
-	fmt.Printf("serve           Run the gitbox server\n")
-	fmt.Printf("Options:\n")
-	fmt.Printf("  -listen       Override the bind port and address\n")
-	fmt.Printf("  -root         Override the document (git database) root\n")
-	fmt.Printf("  -config       Point to the config YAML file\n")
-	fmt.Printf("  -insecure     Use HTTP instead of HTTPS\n")
-	fmt.Printf("  -help         Options help\n")
-}
-
-func client() {
-
-	var configFile, auth, box string
-	var insecure bool
-
-	flag.StringVar(&box, "box", "", "Override the remote box")
-	flag.StringVar(&configFile, "client", "~/.config/gitbox/client.yml", "Point to the client config YAML file")
-	flag.StringVar(&auth, "auth", "", "Override auth token")
-	flag.BoolVar(&insecure, "insecure", false, "Connect over HTTP instead of HTTPS")
-
-	if err := flag.CommandLine.Parse(os.Args[2:]); err != nil {
-		log.Fatal(err)
-	}
-
-	var configData []byte
-	if configFile != "" {
-		var err error
-
-		home, err := os.UserHomeDir()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		configFile = strings.Replace(configFile, "~/", home+"/", -1)
-
-		configFile, err = filepath.Abs(configFile)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		info, err := os.Stat(configFile)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		if info.Mode().Perm() ^ 0600 != 0 {
-			log.Fatalf("Cannot use '%s' as config file: permissions must be set to 0600", configFile)
-		}
-
-		configData, err = os.ReadFile(configFile)
-
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-
-	config := ClientConfig{}
-
-	if err := yaml.Unmarshal(configData, &config); err != nil {
-		log.Fatal(err)
-	}
-
-	if box == "" && config.Default == "" {
-		log.Fatalf("Specify the box to connect to either via -box or 'default:' config key")
-	}
-
-	if box == "" {
-		box = config.Default
-	}
-
-	if auth == "" {
-		if token, ok := config.Tokens[box]; ok {
-			auth = token
-		}
-	}
-
-	cl := clientContext{
-		box: box,
-		auth: auth,
-		proto: "https",
-	}
-
-	if insecure {
-		cl.proto = "http"
-	}
-
-	switch os.Args[1] {
-	case "evict":
-		if len(flag.Args()) != 1 {
-			fmt.Printf("Evict requires exactly 1 argument\n")
-			usage()
-			return
-		}
-		cl.evict()
-		return
-	case "refresh":
-		if len(flag.Args()) != 1 {
-			fmt.Printf("Refresh requires exactly 1 argument\n")
-			usage()
-			return
-		}
-		cl.refresh()
-		return
-	case "fetch":
-		if len(flag.Args()) != 1 {
-			fmt.Printf("Fetch requires exactly 1 argument\n")
-			usage()
-			return
-		}
-		cl.fetch()
-		return
-	case "refresh-all":
-		cl.refreshAll()
-		return
-	case "list":
-		cl.list()
-		return
-	case "status":
-		cl.status()
-		return
-	default:
-		fmt.Printf("Unknown command verb: %v\n", os.Args[1])
-		usage()
-		return
-	}
-
 }
 
 func main() {
@@ -977,6 +773,7 @@ func main() {
 	config.Timeouts.Refresh.Max = 20 * 24 * Hour
 	config.Timeouts.Refresh.Jitter.Min = 20 * Minute
 	config.Timeouts.Refresh.Jitter.Max = 70 * Minute
+	config.Disk.Max = "10G"
 
 	if err := yaml.Unmarshal(configData, &config); err != nil {
 		log.Fatalf("Could not read YAML: %v", err)
@@ -1002,6 +799,11 @@ func main() {
 	// XOR
 	if (config.Https.Certificate == "") != (config.Https.Key == "") {
 		log.Fatal("Error: specify _both_ the certificate and key to use HTTPS")
+	}
+	switch config.Disk.Policy {
+	case "lru", "deny", "proxy", "warn":
+	default:
+		log.Fatal("disk:policy: must be either 'lru', 'deny', 'warn', or 'proxy'")
 	}
 
 	root, err = expandPath(root)
@@ -1031,6 +833,8 @@ func main() {
 		maxRefresh: config.Timeouts.Refresh.Max.D(),
 		minJitter: config.Timeouts.Refresh.Jitter.Min.D(),
 		maxJitter: config.Timeouts.Refresh.Jitter.Max.D(),
+		diskUsagePolicy: config.Disk.Policy,
+		maxDiskUsage: parseDiskSize(config.Disk.Max),
 		git: &cgi.Handler {
 			Path: backend,
 			Dir: root,

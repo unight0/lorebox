@@ -68,7 +68,7 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 	}
 
 	for _, e := range entries {
-		if h.excludedRepoPath(filepath.Clean(path + "/" + e.Name())) {
+		if h.excludedPath(filepath.Clean(h.root + "/" + path + "/" + e.Name())) {
 			continue
 		}
 
@@ -110,23 +110,27 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 	bw.Flush()
 }
 
-func (h *handler) intraRepoPath(path string) string {
+func (h *handler) intraRepoPath(path string) (string, bool) {
 	h.reposLock.RLock()
 	defer h.reposLock.RUnlock()
 
 	for p, _ := range h.repos {
 		p = filepath.Clean(p) + "/"
 		if strings.HasPrefix(path, p) {
-			return path[len(p):]
+			return "/" + path[len(p):], true
 		}
 	}
 
-	return path
+	return path, false
 }
 
-func (h *handler) cacheableRepoPath(path string) bool {
+func (h *handler) cacheablePath(path string) bool {
 
-	path = h.intraRepoPath(path)
+	path, ok := h.intraRepoPath(path)
+
+	if !ok {
+		return false
+	}
 
 	if hasPostfix(path, "/HEAD") ||
 		hasPostfix(path, "/info/refs") ||
@@ -141,14 +145,18 @@ func (h *handler) cacheableRepoPath(path string) bool {
 	return false
 }
 
-func (h *handler) excludedRepoPath(path string) bool {
+func (h *handler) excludedPath(path string) bool {
 
 	// /.tmp dir should not be accessible
-	if strings.HasPrefix(path, "/.tmp") {
+	if strings.HasPrefix(path, filepath.Clean(h.root + "/.tmp")) {
 		return true
 	}
 
-	path = h.intraRepoPath(path)
+	path, ok := h.intraRepoPath(path)
+
+	if !ok {
+		return false
+	}
 
 	return hasPostfix(path, "/gitbox.access") ||
 		hasPostfix(path, "/config") ||
@@ -183,7 +191,7 @@ func (h *handler) serveFile(w http.ResponseWriter, path string) {
 	defer file.Close()
 
 	w.Header().Set("Cache-Control", "max-age=60, no-transform")
-	if h.cacheableRepoPath(path) {
+	if h.cacheablePath(path) {
 		w.Header().Set("Cache-Control", "max-age=31536000, immutable, no-transform")
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -203,7 +211,7 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 	relpath := filepath.Clean("/" + req.URL.Path)
 	path, err := expandPath(h.root + relpath)
 
-	if h.excludedRepoPath(relpath) {
+	if h.excludedPath(path) {
 		log.Printf("Excluded repo path access: %s\n", relpath)
 		h.serve404(w)
 		return

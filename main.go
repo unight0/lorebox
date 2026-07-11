@@ -57,7 +57,7 @@ type repoDescription struct {
 	cancelRefresher func()
 }
 
-const gitboxVersion = "v0.3"
+const gitboxVersion = "v0.4"
 	
 var infoRefs = "/info/refs"
 

@@ -59,16 +59,14 @@ func readBody(body io.Reader) string {
 	return string(text)
 }
 
-func checkStatusCode(code int) {
-	if code != 200 {
-		log.Fatalf("Bad status code response from server: %d", code)
-	}
+func sayStatusCode(code int) {
+	fmt.Printf("status %d\n", code)
 }
 
 func (c *clientContext) simple(what string) {
 	resp := c.apiRequest(what)
 
-	checkStatusCode(resp.StatusCode)
+	sayStatusCode(resp.StatusCode)
 
 	fmt.Printf("%s", readBody(resp.Body))
 }
@@ -78,7 +76,7 @@ func (c *clientContext) refreshAll() {
 
 	resp := c.apiRequest("refresh-all")
 
-	checkStatusCode(resp.StatusCode)
+	sayStatusCode(resp.StatusCode)
 
 	fmt.Printf("%s", readBody(resp.Body))
 }
@@ -99,6 +97,14 @@ func (c *clientContext) fetch() {
 	repo := flag.Args()[0]
 
 	c.simple("fetch/" + repo)
+}
+
+func (c *clientContext) fetchHttp() {
+	repo := flag.Args()[0]
+
+	fmt.Printf("You are fetching %s over http. Note that this is highly insecure; a MiTM can inject arbitrary code, and you are caching it\n", repo)
+
+	c.simple("fetch-http/" + repo)
 }
 
 func (c *clientContext) pin() {
@@ -221,6 +227,14 @@ func client() {
 			return
 		}
 		cl.fetch()
+		return
+	case "fetch-http":
+		if len(flag.Args()) != 1 {
+			fmt.Printf("Fetch requires exactly 1 argument\n")
+			usage()
+			return
+		}
+		cl.fetchHttp()
 		return
 	case "pin":
 		if len(flag.Args()) != 1 {

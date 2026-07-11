@@ -13,6 +13,7 @@ func usage() {
 	fmt.Printf("pin <repo>          Pin a repo\n")
 	fmt.Printf("unpin <repo>        Unpin a repo\n")
 	fmt.Printf("fetch <remote>      Cache remote repo\n")
+	fmt.Printf("fetch-http <remote> Cache remote repo, use HTTP\n")
 	fmt.Printf("refresh-all         Refresh all repos in a box\n")
 	fmt.Printf("effective-config    Print current effective config\n")
 	fmt.Printf("list                List all cached repos in a box\n")

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"path/filepath"
 	"time"
+	"bytes"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -48,100 +49,130 @@ func (h *handler) apiList(w http.ResponseWriter) {
 }
 
 func (h *handler) apiStatus(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
+	bw := &bytes.Buffer{}
 
-	bw := bufio.NewWriter(w)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	size, err := dirSize(h.root)
 	if err != nil {
 		log.Printf("Could not measure size of root dir")
+		bw.WriteString("Could not measure size of root dir\n")
+
+		w.WriteHeader(500)
+		w.Write(bw.Bytes())
+
 		return
 	}
 
-	bw.WriteString(fmt.Sprintf("gitbox server\nversion: %s\nuptime: %s\ntotal storage: %d\n",
+	bw.WriteString(fmt.Sprintf(
+		"gitbox server\n" +
+		"version: %s\n" + 
+		"uptime: %s\n" +
+		"total storage: %d\n" +
+		"total http requests: %d\n",
 		gitboxVersion,
 		time.Now().Sub(h.startup),
 		size,
+		h.totalRequests.Load(),
 	))
 
-	bw.Flush()
+	w.Write(bw.Bytes())
 }
 
 func (h *handler) apiEffectiveConfig(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
+	bw := &bytes.Buffer{}
 
-	bw := bufio.NewWriter(w)
-	defer bw.Flush()
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	out, err := yaml.Marshal(h.effectiveConfig)
 
 	if err != nil {
 		bw.WriteString(fmt.Sprintf("Error: %v\n", err))
+		w.WriteHeader(500)
+		w.Write(bw.Bytes())
 		return
 	}
 
 	bw.Write(out)
+	w.Write(bw.Bytes())
 }
 
 func (h *handler) apiFetch(w http.ResponseWriter, repo string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
+	bw := &bytes.Buffer{}
 
-	bw := bufio.NewWriter(w)
-	defer bw.Flush()
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	logg := log.New(bw, "", log.LstdFlags)
 
-	if h.fetchRepo(repo, logg) {
+	if h.fetchRepo(repo, logg, "https") {
 		logg.Printf("Success\n")
+		w.Write(bw.Bytes())
 		return
 	}
 	
 	logg.Printf("Fail\n")
+	w.WriteHeader(500)
+	w.Write(bw.Bytes())
+}
+
+func (h *handler) apiFetchHttp(w http.ResponseWriter, repo string) {
+	bw := &bytes.Buffer{}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+	logg := log.New(bw, "", log.LstdFlags)
+
+	if h.fetchRepo(repo, logg, "http") {
+		logg.Printf("Success\n")
+		w.Write(bw.Bytes())
+		return
+	}
+	
+	logg.Printf("Fail\n")
+	w.WriteHeader(500)
+	w.Write(bw.Bytes())
 }
 
 func (h *handler) apiPin(w http.ResponseWriter, repo string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
+	bw := &bytes.Buffer{}
 
-	bw := bufio.NewWriter(w)
-	defer bw.Flush()
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	logg := log.New(bw, "", log.LstdFlags)
 
 	if h.pinRepo(repo, logg) {
 		logg.Printf("Success\n")
+		w.Write(bw.Bytes())
 		return
 	}
 	
 	logg.Printf("Fail\n")
+	w.WriteHeader(500)
+	w.Write(bw.Bytes())
 }
 
 func (h *handler) apiUnpin(w http.ResponseWriter, repo string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
+	bw := &bytes.Buffer{}
 
-	bw := bufio.NewWriter(w)
-	defer bw.Flush()
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	logg := log.New(bw, "", log.LstdFlags)
 
 	if h.unpinRepo(repo, logg) {
 		logg.Printf("Success\n")
+		w.Write(bw.Bytes())
 		return
 	}
 	
 	logg.Printf("Fail\n")
+	w.WriteHeader(500)
+	w.Write(bw.Bytes())
 }
 
 func (h *handler) apiRefresh(w http.ResponseWriter, repo string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
+	bw := &bytes.Buffer{}
 
-	bw := bufio.NewWriter(w)
-	defer bw.Flush()
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	logg := log.New(bw, "", log.LstdFlags)
 
@@ -149,22 +180,25 @@ func (h *handler) apiRefresh(w http.ResponseWriter, repo string) {
 
 	if h.refreshRepo(path, logg) {
 		logg.Printf("Success\n")
+		w.Write(bw.Bytes())
 		return
 	}
 
 	logg.Printf("Fail\n")
+	w.WriteHeader(500)
+	w.Write(bw.Bytes())
 }
 
 func (h *handler) apiRefreshAll(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
+	bw := &bytes.Buffer{}
 
-	bw := bufio.NewWriter(w)
-	defer bw.Flush()
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	logg := log.New(bw, "", log.LstdFlags)
 
 	repos := h.getRepos()
+
+	fail := false
 
 	for path, d := range repos {
 		logg.Printf("Refreshing %s", d.repo)
@@ -173,25 +207,31 @@ func (h *handler) apiRefreshAll(w http.ResponseWriter) {
 			continue
 		}
 		logg.Printf("Fail\n")
+		fail = true
 	}
 
+	if fail {
+		w.WriteHeader(500)
+	}
+	w.Write(bw.Bytes())
 }
 
 func (h *handler) apiEvict(w http.ResponseWriter, repo string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
+	bw := &bytes.Buffer{}
 
-	bw := bufio.NewWriter(w)
-	defer bw.Flush()
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
 	logg := log.New(bw, "", log.LstdFlags)
 
 	if h.evictRepo(repo, logg) {
 		logg.Printf("Success\n")
+		w.Write(bw.Bytes())
 		return
 	}
 
 	logg.Printf("Fail\n")
+	w.WriteHeader(500)
+	w.Write(bw.Bytes())
 }
 
 func (h *handler) api(w http.ResponseWriter, req *http.Request) {
@@ -217,6 +257,11 @@ func (h *handler) api(w http.ResponseWriter, req *http.Request) {
 
 	if strings.HasPrefix(req.URL.Path, "/-/fetch/") {
 		h.apiFetch(w, req.URL.Path[len("/-/fetch"):])
+		return
+	}
+
+	if strings.HasPrefix(req.URL.Path, "/-/fetch-http/") {
+		h.apiFetchHttp(w, req.URL.Path[len("/-/fetch-http"):])
 		return
 	}
 

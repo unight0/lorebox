@@ -23,7 +23,9 @@ auth: new
 # Time syntax:
 # Xd, Xh, Xm, Xs -- X days, hours, minutes, seconds
 timeouts:
-  git: 5m
+  git:
+    regular: 10m
+    clone: 30m
   refresh:
     default: 12h
     max: 20d
@@ -43,8 +45,11 @@ disk:
   policy: lru
 
 # Authentication tokens
-# Have form of <id>:<hash>
 # Create with gitbox -gen-token
+# id: and hash: must be set for each entry. Default level: is assumed to be
+# "fetch". level: may be either "admin" or "fetch"
+# "fetch" users may trigger a remote repository fetch, while "admin" users can
+# also use api for remote control of the box
 tokens:
   - id: "id-XYv1wQ"
     hash: "xY3QH-S8usyQVIOIRfTU8q78DLKLNsI5fI9Lj3btGdA"
@@ -56,3 +61,16 @@ tokens:
 https:
  certificate: "cert.pem"
  key: "key.pem"
+
+
+# Ignore, just an idea
+## Scout mode. Creates sightings of all pulled commits and keeps them in a
+## disconnected signed commit tree. This tree is ignored by regular clients,
+## but possible downstream gitboxes will fetch them, too. A sighting is a
+## statement: "I saw commit C in repo R at time T"
+## Use absolute paths here, too.
+#scout:
+#  # SSH signing key; generate with: ssh-keygen -t ed25519 -f scout_key -N ""
+#  # Must be 0600. The public half is served at /.well-known/gitbox/key.pub
+#  key: "scoutkey"
+#  pubkey: "scoutkey.pub"

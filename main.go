@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"sync/atomic"
 	"encoding/base64"
 	"go.yaml.in/yaml/v4"
 	"crypto/sha256"
@@ -30,7 +31,7 @@ import (
 
 type handler struct {
 	root, auth string
-	gitTimeout, defaultRefresh, maxRefresh, minJitter, maxJitter time.Duration
+	gitTimeout, gitCloneTimeout, defaultRefresh, maxRefresh, minJitter, maxJitter time.Duration
 	git *cgi.Handler
 	fetchGroup sn.Group
 	tokens map[string]tokenInfo
@@ -40,6 +41,8 @@ type handler struct {
 	effectiveConfig *Config
 	maxDiskUsage int64
 	diskUsagePolicy string
+
+	totalRequests atomic.Uint64
 }
 
 type tokenInfo struct {
@@ -123,7 +126,7 @@ func (h *handler) refreshRepo(path string, logg *log.Logger) bool {
 	// Non-critical if fails
 	h.refreshDefaultBranch(path)
 
-	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), h.gitCloneTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "fetch", "--prune", "origin")
 	cmd.Stdout = logg.Writer()
@@ -164,6 +167,7 @@ func (h *handler) evictRepo(repo string, logg *log.Logger) bool {
 		return false
 	}
 
+	h.repos[path].cancelRefresher()
 	delete(h.repos, path)
 
 	return true
@@ -256,6 +260,12 @@ func (h *handler) totalRepoSize() (size int64) {
 }
 
 func (h *handler) diskUsageExceeded() bool {
+	h.reposLock.RLock()
+	defer h.reposLock.RUnlock()
+	return h.totalRepoSize() >= h.maxDiskUsage
+}
+
+func (h *handler) diskUsageExceededLocked() bool {
 	return h.totalRepoSize() >= h.maxDiskUsage
 }
 
@@ -285,7 +295,7 @@ func (h *handler) LRU(logg *log.Logger) bool {
 
 	// Delete until have enough space/only pinned repos left
 	for _, i := range idx { 
-		if !h.diskUsageExceeded() {
+		if !h.diskUsageExceededLocked() {
 			break
 		}
 
@@ -296,6 +306,7 @@ func (h *handler) LRU(logg *log.Logger) bool {
 			continue
 		}
 
+		h.repos[i.path].cancelRefresher()
 		delete(h.repos, i.path)
 
 		if err := os.RemoveAll(i.path); err != nil {
@@ -306,7 +317,7 @@ func (h *handler) LRU(logg *log.Logger) bool {
 		logg.Printf("Evicted %s because of disk usage", repo)
 	}
 
-	if h.diskUsageExceeded() {
+	if h.diskUsageExceededLocked() {
 		logg.Printf("Disk usage is exceeded, but only pinned repos are left")
 		return false
 	}
@@ -426,7 +437,7 @@ func (h *handler) applyDiskUsagePolicy(logg *log.Logger) bool {
 	return true
 }
 
-func (h *handler) fetchRepo(repo string, logg *log.Logger) bool {
+func (h *handler) fetchRepo(repo string, logg *log.Logger, scheme string) bool {
 
 	success, _, _ := h.fetchGroup.Do(repo, func() (any, error) {
 	
@@ -434,13 +445,14 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger) bool {
 			return false, nil
 		}
 
-		url := "https:/" + repo
+		url := scheme + ":/" + repo
 
 		// TODO: timeouts
 
 		// First just ls...
 		ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
-	defer cancel()
+		defer cancel()
+
 		cmd := exec.CommandContext(ctx, "git", "ls-remote", "--exit-code", url)
 
 		if err := cmd.Run(); err != nil {
@@ -450,9 +462,17 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger) bool {
 
 		path := filepath.Clean(h.root + "/" + repo)
 
-		ctx, cancel = context.WithTimeout(context.Background(), h.gitTimeout)
-	defer cancel()
-		cmd = exec.CommandContext(ctx, "git", "clone", "--mirror", url, path)
+		tempPath, err := os.MkdirTemp(h.root + "/.tmp", "repo-fetch-*")
+		defer os.RemoveAll(tempPath)
+
+		if err != nil {
+			logg.Printf("Failed to make a temporary directory for '%s' fetch: %v", url, err)
+			tempPath = path
+		}
+
+		ctx, cancel = context.WithTimeout(context.Background(), h.gitCloneTimeout)
+		defer cancel()
+		cmd = exec.CommandContext(ctx, "git", "clone", "--mirror", url, tempPath)
 		cmd.Dir = h.root
 		cmd.Stdout = logg.Writer()
 		cmd.Stderr = logg.Writer()
@@ -462,24 +482,33 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger) bool {
 			return false, nil
 		}
 
-		if !h.configureNewRepo(path, logg) {
+		if !h.configureNewRepo(tempPath, logg) {
 			return false, nil
 		}
 
-		if !h.updateServerInfo(path, logg) {
+		if !h.updateServerInfo(tempPath, logg) {
 			return false, nil
 		}
 
-		size, err := dirSize(path)
+		size, err := dirSize(tempPath)
 
 		if err != nil {
 			logg.Printf("Failed to calculate directory size: %s", path)
+		}
+		
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			logg.Print(err)
+			return false, nil
+		}
+
+		if err := os.Rename(tempPath, path); err != nil {
+			logg.Printf("Failed to move %s to %s", tempPath, path)
+			return false, nil
 		}
 
 		recordAccess(path, logg)
 
 		ctx, cancel = context.WithCancel(context.Background())
-		defer cancel()
 
 		h.reposLock.Lock()
 		h.repos[path] = repoDescription {
@@ -538,6 +567,8 @@ func (h *handler) requireAuth(w http.ResponseWriter, req *http.Request, admin bo
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
+	h.totalRequests.Add(1)
+
 	svc := req.URL.Query().Get("service")
 
 	// Always has to be available
@@ -588,7 +619,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 			log.Printf("Running pullthrough on '%s'", repo)
 			
-			if !h.fetchRepo(repo, log.Default()) {
+			if !h.fetchRepo(repo, log.Default(), "https") {
 				h.serve404(w)
 				return
 			}
@@ -628,6 +659,10 @@ func (h *handler) walkRepos() {
 
 	walk = func(dir string, depth int) (repos map[string]repoDescription) {
 		if depth > maxDepth {
+			return
+		}
+		// Don't walk into /.tmp
+		if dir == h.root + "/.tmp" {
 			return
 		}
 
@@ -718,13 +753,21 @@ func (h *handler) refresher(ctx context.Context, path string) {
 		case <-ctx.Done():
 			log.Printf("Refresher on %s is killed", path)
 			return
-		default:
+		case <-time.After(duration):
 		}
-		time.Sleep(duration)
 
 		if !h.refreshRepo(path, log.Default()) {
 			h.reposLock.Lock()
-			d := h.repos[path]
+
+			d, ok := h.repos[path]
+
+			// Doesn't exist anymore
+			if !ok {
+				log.Printf("Refresher: repo %s is no longer present, dying", path)
+				h.reposLock.Unlock()
+				return
+			}
+
 			d.lastErr = time.Now()
 			h.repos[path] = d
 			h.reposLock.Unlock()
@@ -791,7 +834,10 @@ type Config struct {
 	Auth string
 
 	Timeouts struct {
-		Git Duration
+		Git struct {
+			Regular Duration
+			Clone Duration
+		}
 		Refresh struct {
 			Default Duration
 			Max Duration
@@ -843,8 +889,8 @@ func generateCredentials() {
 	fmt.Printf("# Paste this into your gitbox.yml:\n")
 	fmt.Printf("tokens:\n")
 	fmt.Printf("  - id: \"%s\"\n", enTokenId)
-	fmt.Printf("  	hash: \"%s\"\n", enHash)
-	fmt.Printf("  	level: <select \"fetch\" or \"admin\">\n")
+	fmt.Printf("    hash: \"%s\"\n", enHash)
+	fmt.Printf("    level: <select \"fetch\" or \"admin\">\n")
 
 	fmt.Printf("\n# Private component\n")
 	fmt.Printf("# Use this as user:pass when using git, e.g.:\n")
@@ -1005,7 +1051,8 @@ func main() {
 		Listen: ":8080",
 		Auth: "new",
 	}
-	config.Timeouts.Git = 10 * Minute
+	config.Timeouts.Git.Regular = 5 * Minute
+	config.Timeouts.Git.Clone = 30 * Minute
 	config.Timeouts.Refresh.Default = 12 * Hour
 	config.Timeouts.Refresh.Max = 20 * 24 * Hour
 	config.Timeouts.Refresh.Jitter.Min = 20 * Minute
@@ -1049,11 +1096,20 @@ func main() {
 		log.Fatal(err)
 	}
 
+
+	tmpDir := root + "/.tmp"
+	// Wipe
+	os.RemoveAll(tmpDir)
+	// Create
+	if err := os.Mkdir(tmpDir, 0700); err != nil {
+		log.Fatal(err)
+	}
+
 	html400 = []byte(strings.Replace(string(html400), "__GITBOX_VERSION", gitboxVersion, -1))
 	html404 = []byte(strings.Replace(string(html404), "__GITBOX_VERSION", gitboxVersion, -1))
 	html500 = []byte(strings.Replace(string(html500), "__GITBOX_VERSION", gitboxVersion, -1))
 
-	ctx, cancel := context.WithTimeout(context.Background(), config.Timeouts.Git.D())
+	ctx, cancel := context.WithTimeout(context.Background(), config.Timeouts.Git.Regular.D())
 	defer cancel()
 	gitdir, err := exec.CommandContext(ctx, "git", "--exec-path").Output()
 
@@ -1067,7 +1123,8 @@ func main() {
 		effectiveConfig: &config,
 		root: root,
 		auth: config.Auth,
-		gitTimeout: config.Timeouts.Git.D(),	
+		gitTimeout: config.Timeouts.Git.Regular.D(),	
+		gitCloneTimeout: config.Timeouts.Git.Clone.D(),
 		defaultRefresh: config.Timeouts.Refresh.Default.D(),
 		maxRefresh: config.Timeouts.Refresh.Max.D(),
 		minJitter: config.Timeouts.Refresh.Jitter.Min.D(),
@@ -1111,9 +1168,9 @@ func main() {
 
 	for r := range h.repos {
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
 		info := h.repos[r]
 		info.cancelRefresher = cancel
+		h.repos[r] = info
 		go h.refresher(ctx, r)
 	}
 

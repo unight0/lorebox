@@ -23,7 +23,7 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 		return
 	}
 
-	w.Header().Set("Cache-Control", "public, max-age=60, no-transform")
+	w.Header().Set("Cache-Control", "max-age=60, no-transform")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(200)
 
@@ -68,7 +68,7 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 	}
 
 	for _, e := range entries {
-		if excludedRepoPath(filepath.Clean(path + "/" + e.Name())) {
+		if h.excludedRepoPath(filepath.Clean(path + "/" + e.Name())) {
 			continue
 		}
 
@@ -110,40 +110,61 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 	bw.Flush()
 }
 
-func cacheableRepoPath(path string) bool {
+func (h *handler) intraRepoPath(path string) string {
+	h.reposLock.RLock()
+	defer h.reposLock.RUnlock()
+
+	for p, _ := range h.repos {
+		p = filepath.Clean(p) + "/"
+		if strings.HasPrefix(path, p) {
+			return path[len(p):]
+		}
+	}
+
+	return path
+}
+
+func (h *handler) cacheableRepoPath(path string) bool {
+
+	path = h.intraRepoPath(path)
 
 	if hasPostfix(path, "/HEAD") ||
 		hasPostfix(path, "/info/refs") ||
-		hasPostfix(path, "/objects/info/packs") {
+		strings.Contains(path, "/objects/info/") {
 		return false
 	}
 
-	if strings.Contains(path, "/objects/") ||
-		strings.Contains(path, "pack-") {
+	if strings.Contains(path, "/objects/") {
 		return true
 	}
 
 	return false
 }
 
-func excludedRepoPath(path string) bool {
+func (h *handler) excludedRepoPath(path string) bool {
+
+	// /.tmp dir should not be accessible
+	if strings.HasPrefix(path, "/.tmp") {
+		return true
+	}
+
+	path = h.intraRepoPath(path)
+
 	return hasPostfix(path, "/gitbox.access") ||
 		hasPostfix(path, "/config") ||
 		hasPostfix(path, "/description") ||
-		strings.Contains(path, "/hooks")	
+		strings.Contains(path, "/hooks/") ||
+		hasPostfix(path, "/hooks") ||
+		hasPostfix(path, "/FETCH_HEAD")
 }
 
 func (h *handler) serveFile(w http.ResponseWriter, path string) {
+
 	abspath := filepath.Clean(h.root + path)
 
 	if hasPostfix(abspath, infoRefs) {
 		dirpath := chopInfoRefs(abspath)
 		recordAccess(dirpath, log.Default())
-	}
-
-	if excludedRepoPath(path) {
-		h.serve404(w)
-		return
 	}
 
 	file, err := os.Open(abspath)
@@ -161,9 +182,9 @@ func (h *handler) serveFile(w http.ResponseWriter, path string) {
 	}
 	defer file.Close()
 
-	w.Header().Set("Cache-Control", "public, max-age=60, no-transform")
-	if cacheableRepoPath(path) {
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable, no-transform")
+	w.Header().Set("Cache-Control", "max-age=60, no-transform")
+	if h.cacheableRepoPath(path) {
+		w.Header().Set("Cache-Control", "max-age=31536000, immutable, no-transform")
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
@@ -181,6 +202,12 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 
 	relpath := filepath.Clean("/" + req.URL.Path)
 	path, err := expandPath(h.root + relpath)
+
+	if h.excludedRepoPath(relpath) {
+		log.Printf("Excluded repo path access: %s\n", relpath)
+		h.serve404(w)
+		return
+	}
 
 	if err != nil {
 		log.Printf("expandPath(): %v", err)
@@ -214,7 +241,7 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 
 			log.Printf("Running pullthrough on '%s'", repo)
 
-			if !h.fetchRepo(repo, log.Default()) {
+			if !h.fetchRepo(repo, log.Default(), "https") {
 				h.serve404(w)
 				return
 			}

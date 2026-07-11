@@ -10,6 +10,8 @@ func usage() {
 	fmt.Printf("status              Query box status\n")
 	fmt.Printf("evict <repo>        Evict (delete) a repo\n")
 	fmt.Printf("refresh <repo>      Refresh a repo\n")
+	fmt.Printf("pin <repo>          Pin a repo\n")
+	fmt.Printf("unpin <repo>        Unpin a repo\n")
 	fmt.Printf("fetch <remote>      Cache remote repo\n")
 	fmt.Printf("refresh-all         Refresh all repos in a box\n")
 	fmt.Printf("effective-config    Print current effective config\n")

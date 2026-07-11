@@ -23,7 +23,7 @@ func (h *handler) apiList(w http.ResponseWriter) {
 	var totalSize int64
 
 	bw.WriteString(fmt.Sprintf("Total %d repos\n", len(h.repos)))
-	bw.WriteString(fmt.Sprintf("% -36s % -16s % -28s\n",
+	bw.WriteString(fmt.Sprintf("% -36s % -16s % -28s Pinned\n",
 		"Repository",
 		"Size on disk",
 		"Last refresh error timestamp",
@@ -34,7 +34,11 @@ func (h *handler) apiList(w http.ResponseWriter) {
 		if d.lastErr.IsZero() {
 			lastErr = "(none recorded)"
 		}
-		bw.WriteString(fmt.Sprintf("% -36s %0-16d % -28s\n", d.repo, d.size, lastErr))
+		pinned := "No"
+		if h.repoPinned(d.repo, log.Default()) {
+			pinned = "Yes"
+		}
+		bw.WriteString(fmt.Sprintf("% -36s %0-16d % -28s %s\n", d.repo, d.size, lastErr, pinned))
 		totalSize += d.size
 	}
 
@@ -86,11 +90,45 @@ func (h *handler) apiFetch(w http.ResponseWriter, repo string) {
 	w.WriteHeader(200)
 
 	bw := bufio.NewWriter(w)
-	bw.Flush()
+	defer bw.Flush()
 
 	logg := log.New(bw, "", log.LstdFlags)
 
 	if h.fetchRepo(repo, logg) {
+		logg.Printf("Success\n")
+		return
+	}
+	
+	logg.Printf("Fail\n")
+}
+
+func (h *handler) apiPin(w http.ResponseWriter, repo string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(200)
+
+	bw := bufio.NewWriter(w)
+	defer bw.Flush()
+
+	logg := log.New(bw, "", log.LstdFlags)
+
+	if h.pinRepo(repo, logg) {
+		logg.Printf("Success\n")
+		return
+	}
+	
+	logg.Printf("Fail\n")
+}
+
+func (h *handler) apiUnpin(w http.ResponseWriter, repo string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(200)
+
+	bw := bufio.NewWriter(w)
+	bw.Flush()
+
+	logg := log.New(bw, "", log.LstdFlags)
+
+	if h.unpinRepo(repo, logg) {
 		logg.Printf("Success\n")
 		return
 	}
@@ -179,6 +217,16 @@ func (h *handler) api(w http.ResponseWriter, req *http.Request) {
 
 	if strings.HasPrefix(req.URL.Path, "/-/fetch/") {
 		h.apiFetch(w, req.URL.Path[len("/-/fetch"):])
+		return
+	}
+
+	if strings.HasPrefix(req.URL.Path, "/-/pin/") {
+		h.apiPin(w, req.URL.Path[len("/-/pin"):])
+		return
+	}
+
+	if strings.HasPrefix(req.URL.Path, "/-/unpin/") {
+		h.apiPin(w, req.URL.Path[len("/-/unpin"):])
 		return
 	}
 

@@ -101,6 +101,17 @@ func (c *clientContext) fetch() {
 	c.simple("fetch/" + repo)
 }
 
+func (c *clientContext) pin() {
+	repo := flag.Args()[0]
+
+	c.simple("pin/" + repo)
+}
+
+func (c *clientContext) unpin() {
+	repo := flag.Args()[0]
+
+	c.simple("unpin/" + repo)
+}
 const defaultConfigFile = "~/.config/gitbox/client.yml"
 
 func getConfigData(configFile string) (configData []byte) {
@@ -210,6 +221,22 @@ func client() {
 			return
 		}
 		cl.fetch()
+		return
+	case "pin":
+		if len(flag.Args()) != 1 {
+			fmt.Printf("Pin requires exactly 1 argument\n")
+			usage()
+			return
+		}
+		cl.pin()
+		return
+	case "unpin":
+		if len(flag.Args()) != 1 {
+			fmt.Printf("Unpin requires exactly 1 argument\n")
+			usage()
+			return
+		}
+		cl.unpin()
 		return
 	case "refresh-all":
 		cl.refreshAll()

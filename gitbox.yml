@@ -35,7 +35,7 @@ timeouts:
 disk:
   # Maximum disk space gitbox will use
   # Syntax: XG, XM, XK, X -- X gigabytes, megabytes, kilobytes, bytes
-  max: 10K
+  max: 10G
   # What to do if maximum disk usage is reached. Possible options:
   # lru -- enforce Least Recently Used eviction policy
   # deny -- disallow further caching

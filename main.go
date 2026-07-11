@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"sync"
 	"sort"
+	"errors"
 	"encoding/base64"
 	"go.yaml.in/yaml/v4"
 	"crypto/sha256"
@@ -232,12 +233,12 @@ func (h *handler) diskUsageExceeded(logg *log.Logger) bool {
 	return totalSize >= h.maxDiskUsage
 }
 
-func (h *handler) LRU(logg *log.Logger) {
+func (h *handler) LRU(logg *log.Logger) bool {
 	h.reposLock.Lock()
 	defer h.reposLock.Unlock()
 
 	if len(h.repos) == 0 {
-		return
+		return true
 	}
 
 	index := map[time.Time]string{}
@@ -253,16 +254,37 @@ func (h *handler) LRU(logg *log.Logger) {
 		return modTimes[i].Before(modTimes[j])
 	})
 
-	// Delete until have enough space
-	for h.diskUsageExceeded(logg) && len(modTimes) > 0 {
-		path := index[modTimes[0]]
-		delete(h.repos, path)
-		if err := os.RemoveAll(path); err != nil {
-			logg.Printf("Couldn't LRU evict '%s': %v", path, err)
+	// Delete until have enough space/only pinned repos left
+	for _, t := range modTimes {
+		if !h.diskUsageExceeded(logg) {
+			break
+		}
+
+		path := index[t]
+
+		repo := h.repos[path].repo
+
+		if h.repoPinned(repo, logg) {
+			logg.Printf("Can't LRU evict %s: repo is pinned", repo)
 			continue
 		}
-		logg.Printf("Evicted '%s' because of disk usage", h.chopRoot(path))
+
+		delete(h.repos, path)
+
+		if err := os.RemoveAll(path); err != nil {
+			logg.Printf("Couldn't LRU evict %s: %v", repo, err)
+			continue
+		}
+
+		logg.Printf("Evicted %s because of disk usage", repo)
 	}
+
+	if h.diskUsageExceeded(logg) {
+		logg.Printf("Disk usage is exceeded, but only pinned repos are left")
+		return false
+	}
+
+	return true
 }
 
 func readAccess(path string, logg *log.Logger) time.Time {
@@ -276,6 +298,60 @@ func readAccess(path string, logg *log.Logger) time.Time {
 	}
 
 	return info.ModTime()
+}
+
+func (h *handler) pinRepo(repo string, logg *log.Logger) bool {
+	path := filepath.Clean(h.root + "/" + repo)
+
+	cmd := exec.Command("git", "config", "gitbox.pinned", "true")
+	cmd.Stderr = logg.Writer()
+	cmd.Stdout = logg.Writer()
+	cmd.Dir = path
+
+	if err := cmd.Run(); err != nil {
+		logg.Printf("Failed to pin '%s': %v", repo, err)
+		return false
+	}
+
+	return true
+}
+
+func (h *handler) unpinRepo(repo string, logg *log.Logger) bool {
+	path := filepath.Clean(h.root + "/" + repo)
+
+	cmd := exec.Command("git", "config", "--unset", "gitbox.pinned")
+	cmd.Stderr = logg.Writer()
+	cmd.Stdout = logg.Writer()
+	cmd.Dir = path
+
+	if err := cmd.Run(); err != nil {
+		logg.Printf("Failed to pin '%s': %v", repo, err)
+		return false
+	}
+
+	return true
+}
+
+func (h *handler) repoPinned(repo string, logg *log.Logger) bool {
+	path := filepath.Clean(h.root + "/" + repo)
+
+	cmd := exec.Command("git", "config", "--bool", "gitbox.pinned")
+	cmd.Dir = path
+
+	err := cmd.Run()
+
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return false
+		}
+
+		logg.Printf("Failed to check if repo is pinned '%s': %v", repo, err)
+		return false
+	}
+
+	// 0 exit code means it exists, in our case === true
+	return true
 }
 
 func recordAccess(path string, logg *log.Logger) {
@@ -309,7 +385,7 @@ func (h *handler) applyDiskUsagePolicy(logg *log.Logger) bool {
 			return false
 		case "warn":
 		case "lru":
-			h.LRU(logg)
+			return h.LRU(logg)
 		default:
 			panic("Unknown disk usage policy")
 		}

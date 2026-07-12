@@ -65,12 +65,12 @@ func (h *handler) apiStatus(w http.ResponseWriter) {
 	}
 
 	bw.WriteString(fmt.Sprintf(
-		"gitbox server\n" +
+		"lorebox server\n" +
 		"version: %s\n" + 
 		"uptime: %s\n" +
 		"total storage: %d\n" +
 		"total http requests: %d\n",
-		gitboxVersion,
+		loreboxVersion,
 		time.Now().Sub(h.startup),
 		size,
 		h.totalRequests.Load(),

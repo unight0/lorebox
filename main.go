@@ -57,7 +57,7 @@ type repoDescription struct {
 	cancelRefresher func()
 }
 
-const gitboxVersion = "v0.4"
+const loreboxVersion = "v0.4"
 	
 var infoRefs = "/info/refs"
 
@@ -174,7 +174,7 @@ func (h *handler) evictRepo(repo string, logg *log.Logger) bool {
 }
 
 func (h *handler) configureNewRepo(path string, logg *log.Logger) bool {
-	// Config for the future, so git doesn't lose refs/gitbox/*
+	// Config for the future, so git doesn't lose refs/lorebox/*
 	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "config", "--unset", "remote.origin.mirror")
@@ -326,7 +326,7 @@ func (h *handler) LRU(logg *log.Logger) bool {
 }
 
 func readAccess(path string, logg *log.Logger) time.Time {
-	accPath := filepath.Clean(path + "/gitbox.access")
+	accPath := filepath.Clean(path + "/lorebox.access")
 
 	info, err := os.Stat(accPath)
 
@@ -343,7 +343,7 @@ func (h *handler) pinRepo(repo string, logg *log.Logger) bool {
 
 	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "config", "gitbox.pinned", "true")
+	cmd := exec.CommandContext(ctx, "git", "config", "lorebox.pinned", "true")
 	cmd.Stderr = logg.Writer()
 	cmd.Stdout = logg.Writer()
 	cmd.Dir = path
@@ -361,7 +361,7 @@ func (h *handler) unpinRepo(repo string, logg *log.Logger) bool {
 
 	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "config", "--unset", "gitbox.pinned")
+	cmd := exec.CommandContext(ctx, "git", "config", "--unset", "lorebox.pinned")
 	cmd.Stderr = logg.Writer()
 	cmd.Stdout = logg.Writer()
 	cmd.Dir = path
@@ -379,7 +379,7 @@ func (h *handler) repoPinned(repo string, logg *log.Logger) bool {
 
 	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "config", "--bool", "gitbox.pinned")
+	cmd := exec.CommandContext(ctx, "git", "config", "--bool", "lorebox.pinned")
 	cmd.Dir = path
 
 	err := cmd.Run()
@@ -399,7 +399,7 @@ func (h *handler) repoPinned(repo string, logg *log.Logger) bool {
 }
 
 func recordAccess(path string, logg *log.Logger) {
-	accPath := filepath.Clean(path + "/gitbox.access")
+	accPath := filepath.Clean(path + "/lorebox.access")
 
 	// Doesn't exist; touch
 	if _, err := os.Stat(accPath); err != nil {
@@ -596,8 +596,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		// Prevent cross-site nastiness
-		if req.Header.Get("X-Gitbox-Api") != "On" {
-			log.Printf("Valid auth, but no X-Gitbox-Api header")
+		if req.Header.Get("X-Lorebox-Api") != "On" {
+			log.Printf("Valid auth, but no X-Lorebox-Api header")
 			h.serve400(w)
 			return
 		}
@@ -886,7 +886,7 @@ func generateCredentials() {
 
 	fmt.Printf("# Successfully generated token credentials\n")
 	fmt.Printf("# Public (server) component\n")
-	fmt.Printf("# Paste this into your gitbox.yml:\n")
+	fmt.Printf("# Paste this into your lorebox.yml:\n")
 	fmt.Printf("tokens:\n")
 	fmt.Printf("  - id: \"%s\"\n", enTokenId)
 	fmt.Printf("    hash: \"%s\"\n", enHash)
@@ -895,10 +895,10 @@ func generateCredentials() {
 	fmt.Printf("\n# Private component\n")
 	fmt.Printf("# Use this as user:pass when using git, e.g.:\n")
 	fmt.Printf("# git clone https://%s:%s@box.bob.net/alice.net/alice/repo\n", enTokenId, enToken)
-	fmt.Printf("# Or you can paste this into your ~/.config/gitbox/client.yml:\n")
+	fmt.Printf("# Or you can paste this into your ~/.config/lorebox/client.yml:\n")
 	fmt.Printf("tokens:\n")
-	fmt.Printf("  \"%s\": \"%s\"\n", enTokenId, enToken)
-	fmt.Printf("# Then run 'gitbox autoconf' to automatically configure your git client to use this token\n")
+	fmt.Printf("  \"<your box>\": \"%s:%s\"\n", enTokenId, enToken)
+	fmt.Printf("# Then run 'lorebox register' to regsiter lorebox as your git's auth provider for this box\n")
 
 	fmt.Printf("\n%s:%s\n", enTokenId, enToken)
 }
@@ -913,11 +913,11 @@ func registerWithGit() {
 	fmt.Printf("Configuring your git client...\n")
 
 	if len(config.Tokens) == 0 {
-		fmt.Printf("No tokens configured for ~/.config/gitbox/client.yml")
+		fmt.Printf("No tokens configured for ~/.config/lorebox/client.yml")
 		return
 	}
 
-	gitbox, err := os.Executable()
+	lorebox, err := os.Executable()
 
 	if err != nil {
 		fmt.Printf("Couldn't obtain executable path of self: %v", err)
@@ -927,7 +927,7 @@ func registerWithGit() {
 	for host, _ := range config.Tokens {
 		fmt.Printf("Registering auth for %s...\n", host)
 
-		err = exec.Command("git", "config", "--global", "credential.http://" + host + ".helper", "!" + gitbox + " credential").Run()
+		err = exec.Command("git", "config", "--global", "credential.http://" + host + ".helper", "!" + lorebox + " credential").Run()
 
 		if err != nil {
 			fmt.Println(err)
@@ -935,7 +935,7 @@ func registerWithGit() {
 
 		fmt.Printf("    http success\n")
 
-		err = exec.Command("git", "config", "--global", "credential.https://" + host + ".helper", "!" + gitbox + " credential").Run()
+		err = exec.Command("git", "config", "--global", "credential.https://" + host + ".helper", "!" + lorebox + " credential").Run()
 
 		if err != nil {
 			fmt.Println(err)
@@ -1034,7 +1034,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	log.Printf("Starting gitbox " + gitboxVersion)
+	log.Printf("Starting lorebox " + loreboxVersion)
 
 	var configData []byte
 	var err error
@@ -1051,6 +1051,8 @@ func main() {
 		Listen: ":8080",
 		Auth: "new",
 	}
+	config.Disk.Max = "10G"
+	config.Disk.Policy = "lru"
 	config.Timeouts.Git.Regular = 5 * Minute
 	config.Timeouts.Git.Clone = 30 * Minute
 	config.Timeouts.Refresh.Default = 12 * Hour
@@ -1105,9 +1107,9 @@ func main() {
 		log.Fatal(err)
 	}
 
-	html400 = []byte(strings.Replace(string(html400), "__GITBOX_VERSION", gitboxVersion, -1))
-	html404 = []byte(strings.Replace(string(html404), "__GITBOX_VERSION", gitboxVersion, -1))
-	html500 = []byte(strings.Replace(string(html500), "__GITBOX_VERSION", gitboxVersion, -1))
+	html400 = []byte(strings.Replace(string(html400), "__LOREBOX_VERSION", loreboxVersion, -1))
+	html404 = []byte(strings.Replace(string(html404), "__LOREBOX_VERSION", loreboxVersion, -1))
+	html500 = []byte(strings.Replace(string(html500), "__LOREBOX_VERSION", loreboxVersion, -1))
 
 	ctx, cancel := context.WithTimeout(context.Background(), config.Timeouts.Git.Regular.D())
 	defer cancel()

@@ -3,7 +3,7 @@ package main
 import "fmt"
 
 func usage() {
-	fmt.Printf("gitbox server and remote control panel\n")
+	fmt.Printf("lorebox server and remote control panel\n")
 	fmt.Printf("Verbs:\n\n")
 
 	fmt.Printf("Remote control:\n")
@@ -26,11 +26,11 @@ func usage() {
 
 	fmt.Printf("\nUtilities:\n")
 	fmt.Printf("gen-token       Generate access token credentials\n")
-	fmt.Printf("register        Register gitbox as authenticator for your git boxes with git\n")
+	fmt.Printf("register        Register lorebox as authenticator for your loreboxes with git\n")
 	fmt.Printf("credential get  Credential helper for git, not for manual use\n")
 
 	fmt.Printf("\nServer:\n")
-	fmt.Printf("serve           Run the gitbox server\n")
+	fmt.Printf("serve           Run the lorebox server\n")
 	fmt.Printf("Options:\n")
 	fmt.Printf("  -listen       Override the bind port and address\n")
 	fmt.Printf("  -root         Override the document (git database) root\n")

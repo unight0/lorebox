@@ -1,5 +1,5 @@
-# gitbox.yml
-# The singular and only config file for gitbox server
+# lorebox.yml
+# The singular and only config file for lorebox server
 
 # Root directory for storing repositories
 # Please use an absolute path here for predictability purposes
@@ -8,10 +8,10 @@ root: "."
 # Listen for incoming connections at host:port. No host/0.0.0.0 for any source
 # address, 127.0.0.1 or [::1] for loopback-only
 # Default port is 8080 for demonstration purposes. I advise either:
-# a) Run gitbox on a bare chosen unique port, enable HTTPS
-# b) If 443 is not taken, run gitbox there, enable HTTPS
+# a) Run lorebox on a bare chosen unique port, enable HTTPS
+# b) If 443 is not taken, run lorebox there, enable HTTPS
 # c) Route through your HTTPS server running at 443 + use a subdomain like
-# box.bob.me. Disable HTTPS, gitbox never has to touch TLS certificates
+# box.bob.me. Disable HTTPS, lorebox never has to touch TLS certificates
 listen: "127.0.0.1:8080"
 
 # Options:
@@ -24,7 +24,7 @@ auth: new
 # Xd, Xh, Xm, Xs -- X days, hours, minutes, seconds
 timeouts:
   git:
-    regular: 10m
+    regular: 5m
     clone: 30m
   refresh:
     default: 12h
@@ -35,7 +35,7 @@ timeouts:
       max: 50m
 
 disk:
-  # Maximum disk space gitbox will use
+  # Maximum disk space lorebox will use
   # Syntax: XG, XM, XK, X -- X gigabytes, megabytes, kilobytes, bytes
   max: 10G
   # What to do if maximum disk usage is reached. Possible options:
@@ -45,7 +45,7 @@ disk:
   policy: lru
 
 # Authentication tokens
-# Create with gitbox -gen-token
+# Create with lorebox -gen-token
 # id: and hash: must be set for each entry. Default level: is assumed to be
 # "fetch". level: may be either "admin" or "fetch"
 # "fetch" users may trigger a remote repository fetch, while "admin" users can
@@ -64,13 +64,13 @@ https:
 
 
 # Ignore, just an idea
-## Scout mode. Creates sightings of all pulled commits and keeps them in a
+## Scout mode. Creates colophons of all pulled commits and keeps them in a
 ## disconnected signed commit tree. This tree is ignored by regular clients,
-## but possible downstream gitboxes will fetch them, too. A sighting is a
+## but possible downstream loreboxes will fetch them, too. A colophon is a
 ## statement: "I saw commit C in repo R at time T"
 ## Use absolute paths here, too.
 #scout:
 #  # SSH signing key; generate with: ssh-keygen -t ed25519 -f scout_key -N ""
-#  # Must be 0600. The public half is served at /.well-known/gitbox/key.pub
+#  # Must be 0600. The public half is served at /.well-known/lorebox/key.pub
 #  key: "scoutkey"
 #  pubkey: "scoutkey.pub"

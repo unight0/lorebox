@@ -105,7 +105,7 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 		))
 	}
 
-	bw.WriteString("</table><hr>gitbox server " + gitboxVersion)
+	bw.WriteString("</table><hr>lorebox server " + loreboxVersion)
 	bw.Write(htmlGenericEnd)
 	bw.Flush()
 }
@@ -158,7 +158,7 @@ func (h *handler) excludedPath(path string) bool {
 		return false
 	}
 
-	return hasPostfix(path, "/gitbox.access") ||
+	return hasPostfix(path, "/lorebox.access") ||
 		hasPostfix(path, "/config") ||
 		hasPostfix(path, "/description") ||
 		strings.Contains(path, "/hooks/") ||

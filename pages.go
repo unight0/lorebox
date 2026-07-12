@@ -51,7 +51,7 @@ func (h *handler) serve400(w http.ResponseWriter) {
 // Authentication requred 
 func (h *handler) serve401(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("WWW-Authenticate", "Basic realm=\"gitbox\"")
+	w.Header().Set("WWW-Authenticate", "Basic realm=\"lorebox\"")
 	w.WriteHeader(401)
 
 	_, err := w.Write(html401)

@@ -35,7 +35,7 @@ func (c *clientContext) apiRequest(what string) *http.Response {
 	cred := base64.StdEncoding.EncodeToString([]byte(c.auth))
 
 	req.Header.Set("Authorization", "Basic " + cred)
-	req.Header.Set("User-Agent", "Gitbox/" + gitboxVersion)
+	req.Header.Set("User-Agent", "Gitbox/" + loreboxVersion)
 	req.Header.Set("X-Gitbox-Api", "On")
 
 	client := &http.Client{}
@@ -118,7 +118,7 @@ func (c *clientContext) unpin() {
 
 	c.simple("unpin/" + repo)
 }
-const defaultConfigFile = "~/.config/gitbox/client.yml"
+const defaultConfigFile = "~/.config/lorebox/client.yml"
 
 func getConfigData(configFile string) (configData []byte) {
 	silenceNotExists := configFile == defaultConfigFile
@@ -165,7 +165,7 @@ func client() {
 	var insecure bool
 
 	flag.StringVar(&box, "box", "", "Override the remote box")
-	flag.StringVar(&configFile, "client", defaultConfigFile, "Point to the client config YAML file")
+	flag.StringVar(&configFile, "config", defaultConfigFile, "Point to the client config YAML file")
 	flag.StringVar(&auth, "auth", "", "Override auth token")
 	flag.BoolVar(&insecure, "insecure", false, "Connect over HTTP instead of HTTPS")
 

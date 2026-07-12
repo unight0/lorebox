@@ -36,7 +36,7 @@ func (c *clientContext) apiRequest(what string) *http.Response {
 
 	req.Header.Set("Authorization", "Basic " + cred)
 	req.Header.Set("User-Agent", "Gitbox/" + loreboxVersion)
-	req.Header.Set("X-Gitbox-Api", "On")
+	req.Header.Set("X-Lorebox-Api", "On")
 
 	client := &http.Client{}
 

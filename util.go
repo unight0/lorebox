@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"log"
 	"strings"
+	"runtime/debug"
 )
 
 func hasPostfix(str, postfix string) bool {
@@ -27,6 +28,40 @@ func (h *handler) chopRoot(path string) string {
 		path = path[len(h.root):]
 	}
 	return path
+}
+
+func fullSelfID() (id string) {
+	id = "lorebox " + loreboxVersion
+
+	info, ok := debug.ReadBuildInfo()
+
+	if !ok {
+		return
+	}
+
+	id += " "
+
+	for _, s := range info.Settings {
+		//if s.Key == "vcs" {
+		//	id += s.Value + " "
+		//}
+		if s.Key == "vcs.revision" {
+
+			// Shorten it
+			if len(s.Value) > 7 {
+				s.Value = s.Value[:7]
+			}
+
+			id += s.Value + " "
+		}
+		if s.Key == "vcs.modified" {
+			if s.Value == "true" {
+				id += "modified "
+			}
+		}
+	}
+
+	return
 }
 
 // Maybe rework this later

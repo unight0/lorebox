@@ -1107,9 +1107,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	html400 = []byte(strings.Replace(string(html400), "__LOREBOX_VERSION", loreboxVersion, -1))
-	html404 = []byte(strings.Replace(string(html404), "__LOREBOX_VERSION", loreboxVersion, -1))
-	html500 = []byte(strings.Replace(string(html500), "__LOREBOX_VERSION", loreboxVersion, -1))
+	sID := fullSelfID()
+	html400 = []byte(strings.Replace(string(html400), "__LOREBOX_VERSION", sID, -1))
+	html401 = []byte(strings.Replace(string(html401), "__LOREBOX_VERSION", sID, -1))
+	html404 = []byte(strings.Replace(string(html404), "__LOREBOX_VERSION", sID, -1))
+	html500 = []byte(strings.Replace(string(html500), "__LOREBOX_VERSION", sID, -1))
 
 	ctx, cancel := context.WithTimeout(context.Background(), config.Timeouts.Git.Regular.D())
 	defer cancel()

@@ -105,7 +105,7 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 		))
 	}
 
-	bw.WriteString("</table><hr>lorebox server " + loreboxVersion)
+	bw.WriteString("</table><hr> " + fullSelfID())
 	bw.Write(htmlGenericEnd)
 	bw.Flush()
 }

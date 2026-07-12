@@ -22,22 +22,22 @@ helper.
 
 ## Features
 
-- **Pull-through caching** — first fetch mirrors the upstream repo
+- Pull-through caching: first fetch mirrors the upstream repo
   (`git clone --mirror`), subsequent fetches are served from disk via
   git's smart HTTP protocol (and the dumb protocol as a fallback).
-- **Background refresh** — every cached repo is re-fetched periodically with
+- Background refresh: every cached repo is re-fetched periodically with
   configurable interval and jitter; failing repos back off exponentially.
-- **Disk budget** — a maximum disk usage with a choice of `lru` (evict least
+- Disk budget: a maximum disk usage with a choice of `lru` (evict least
   recently used), `deny` (refuse new fetches), or `warn` policies.
-- **Pinning** — pinned repos are never evicted.
-- **Token auth** — SHA-256-hashed bearer tokens with `fetch` and `admin`
+- Pinning: pinned repos are never evicted.
+- Token auth: SHA-256-hashed bearer tokens with `fetch` and `admin`
   levels; auth can be required for everything, only for new fetches, or
   disabled.
-- **Remote control** — an authenticated HTTP API (`/-/...`) and a matching
+- Remote control: an authenticated HTTP API (`/-/...`) and a matching
   CLI: list, status, fetch, refresh, pin/unpin, evict.
-- **HTTPS** — built-in TLS with certificate hot-reload on `SIGHUP`, or run it
+- HTTPS: built-in TLS with certificate hot-reload on `SIGHUP`, or run it
   plain behind your existing reverse proxy.
-- **Browsable** — cached repos are listed at `/repos.txt` and browsable as a
+- Browsable: cached repos are listed at `/repos.txt` and browsable as a
   plain directory index in any web browser.
 
 ## Building
@@ -121,13 +121,10 @@ lorebox effective-config                # dump the server's live config
 
 ## Notes
 
-- Gitbox is **read-only**: pushes (`git-receive-pack`) are rejected. It
+- Gitbox is _read-only_: pushes (`git-receive-pack`) are rejected. It
   mirrors upstreams; it does not host original repositories.
 - Upstreams are fetched over HTTPS. `fetch-http` exists for HTTP-only
-  upstreams but is insecure — a man-in-the-middle can feed you arbitrary
+  upstreams but is insecure: a man-in-the-middle can feed you arbitrary
   code, which you then cache.
 - `auth: none` exposes fetch-anything-through-your-box to the internet;
   don't use it on a public address.
-
-See [DOCS.md](DOCS.md) for internals: URL layout, caching mechanics, refresh
-scheduling, eviction, and the full API surface.

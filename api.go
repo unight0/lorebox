@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	//"bufio"
 	"net/http"
 	"fmt"
 	"log"
@@ -9,43 +9,44 @@ import (
 	"path/filepath"
 	"time"
 	"bytes"
+	"encoding/json"
 	"go.yaml.in/yaml/v4"
 )
 
+func jsonFailure(description, status string) string {
+	return fmt.Sprintf(`{"status":"%s; Status: %s"}`, description, status)
+}
+
 func (h *handler) apiList(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
-
-	bw := bufio.NewWriter(w)
 
 	h.reposLock.RLock()
 	defer h.reposLock.RUnlock()
 
-	var totalSize int64
+	repos := jsonableRepos{Status: "success"}
+	repos.Repos = map[string]jsonableRepo{}
 
-	bw.WriteString(fmt.Sprintf("Total %d repos\n", len(h.repos)))
-	bw.WriteString(fmt.Sprintf("% -36s % -16s % -28s Pinned\n",
-		"Repository",
-		"Size on disk",
-		"Last refresh error timestamp",
-	))
+	for p, d := range h.repos {
+		repo := jsonableRepo {
+			Name: d.repo,
+			LastError: d.lastErr,
+			Pinned: h.repoPinned(d.repo, log.Default()),
+			Size: d.size,
+		}
 
-	for _, d := range h.repos {
-		lastErr := fmt.Sprintf("%s", d.lastErr)
-		if d.lastErr.IsZero() {
-			lastErr = "-"
-		}
-		pinned := "No"
-		if h.repoPinned(d.repo, log.Default()) {
-			pinned = "Yes"
-		}
-		bw.WriteString(fmt.Sprintf("% -36s %0-16d % -28s %s\n", d.repo, d.size, lastErr, pinned))
-		totalSize += d.size
+		repos.Repos[p] = repo
+		repos.TotalSize += d.size
 	}
 
-	bw.WriteString(fmt.Sprintf("Total %d bytes (%d kilobytes)\n", totalSize, totalSize/1024))
+	marsh, err := json.Marshal(repos)
 
-	bw.Flush()
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(jsonFailure("Could not marshal repo list into JSON", repos.Status)))
+		return
+	}
+
+	w.Write(marsh)
 }
 
 func (h *handler) apiStatus(w http.ResponseWriter) {
@@ -64,17 +65,35 @@ func (h *handler) apiStatus(w http.ResponseWriter) {
 		return
 	}
 
-	bw.WriteString(fmt.Sprintf(
-		"lorebox server\n" +
-		"version: %s\n" + 
-		"uptime: %s\n" +
-		"total storage: %d\n" +
-		"total http requests: %d\n",
-		loreboxVersion,
-		time.Now().Sub(h.startup),
-		size,
-		h.totalRequests.Load(),
-	))
+	status := jsonableStatus {
+		Banner: "lorebox server",
+		Status: "success",
+		ID: fullSelfID(),
+		Version: loreboxVersion,
+		UptimeSec: int(time.Now().Sub(h.startup).Seconds()),
+		TotalHTTPReqs: int(h.totalRequests.Load()),
+	}
+	status.Disk.Usage = size
+	status.Disk.Max = h.maxDiskUsage
+	status.Disk.Policy = h.diskUsagePolicy
+	status.Cache.Hits = int(h.cacheHits.Load())
+	status.Cache.Misses = int(h.cacheMisses.Load())
+
+	marsh, err := json.Marshal(status)
+
+	if err != nil {
+		log.Print(err)
+		status = jsonableStatus{}
+		if err != nil {
+			bw.WriteString(jsonFailure("Could not marshal status into JSON", status.Status))
+
+			w.WriteHeader(500)
+			w.Write(bw.Bytes())
+			return
+		}
+	}
+
+	bw.Write(marsh)
 
 	w.Write(bw.Bytes())
 }
@@ -133,105 +152,160 @@ func (h *handler) apiFetchHttp(w http.ResponseWriter, repo string) {
 	w.Write(bw.Bytes())
 }
 
-func (h *handler) apiPin(w http.ResponseWriter, repo string) {
-	bw := &bytes.Buffer{}
+func (h *handler) apiSimpleTr(w http.ResponseWriter, f func(*log.Logger) bool) {
+	w.Header().Set("Content-Type", "text/json; charset=utf-8")
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	op := jsonableOperation{Status:"success"}
+	tr := &bytes.Buffer{}
+	logg := log.New(tr, "", log.LstdFlags)
 
-	logg := log.New(bw, "", log.LstdFlags)
+	if !f(logg) {
+		op.Status = "Internal error"
+	}
 
-	if h.pinRepo(repo, logg) {
-		logg.Printf("Success\n")
-		w.Write(bw.Bytes())
-		return
+	op.Transcript = string(tr.Bytes())
+
+	marsh, err := json.Marshal(op)
+
+	if err != nil {
+		w.WriteHeader(500)
+		marsh = []byte(jsonFailure("Could not marshal response into JSON", op.Status))
 	}
 	
-	logg.Printf("Fail\n")
-	w.WriteHeader(500)
-	w.Write(bw.Bytes())
+	w.Write(marsh)
+}
+
+func (h *handler) apiPin(w http.ResponseWriter, repo string) {
+	h.apiSimpleTr(w, func(logg *log.Logger) bool {
+		return h.pinRepo(repo, logg)
+	})
+	//w.Header().Set("Content-Type", "text/json; charset=utf-8")
+
+	//op := jsonableOperation{Status:"success"}
+
+	//tr := &bytes.Buffer{}
+	//logg := log.New(tr, "", log.LstdFlags)
+
+	//if !h.pinRepo(repo, logg) {
+	//	op.Status = "Error pinning repo"
+	//}
+
+	//op.Transcript = string(tr.Bytes())
+
+	//marsh, err := json.Marshal(op)
+
+	//if err != nil {
+	//	w.WriteHeader(500)
+	//	w.Write([]byte(jsonFailure("Could not marshal pin info into JSON")))
+	//	return
+	//}
+	//
+	//w.Write(marsh)
 }
 
 func (h *handler) apiUnpin(w http.ResponseWriter, repo string) {
-	bw := &bytes.Buffer{}
+	h.apiSimpleTr(w, func(logg *log.Logger) bool {
+		return h.unpinRepo(repo, logg)
+	})
+	//w.Header().Set("Content-Type", "text/json; charset=utf-8")
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	//op := jsonableOperation{Status:"success"}
 
-	logg := log.New(bw, "", log.LstdFlags)
+	//tr := &bytes.Buffer{}
+	//logg := log.New(tr, "", log.LstdFlags)
 
-	if h.unpinRepo(repo, logg) {
-		logg.Printf("Success\n")
-		w.Write(bw.Bytes())
-		return
-	}
-	
-	logg.Printf("Fail\n")
-	w.WriteHeader(500)
-	w.Write(bw.Bytes())
+	//if !h.unpinRepo(repo, logg) {
+	//	op.Status = "Error unpinning repo"
+	//}
+
+	//op.Transcript = string(tr.Bytes())
+
+	//marsh, err := json.Marshal(op)
+
+	//if err != nil {
+	//	w.WriteHeader(500)
+	//	w.Write([]byte(jsonFailure("Could not marshal pin info into JSON")))
+	//	return
+	//}
+	//
+	//w.Write(marsh)
 }
 
 func (h *handler) apiRefresh(w http.ResponseWriter, repo string) {
-	bw := &bytes.Buffer{}
-
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-
-	logg := log.New(bw, "", log.LstdFlags)
-
 	path := filepath.Clean(h.root + "/" + repo)
 
-	if h.refreshRepo(path, logg) {
-		logg.Printf("Success\n")
-		w.Write(bw.Bytes())
-		return
-	}
+	h.apiSimpleTr(w, func(logg *log.Logger) bool {
+		return h.refreshRepo(path, logg)
+	})
+	//w.Header().Set("Content-Type", "text/json; charset=utf-8")
 
-	logg.Printf("Fail\n")
-	w.WriteHeader(500)
-	w.Write(bw.Bytes())
-}
+	//op := jsonableOperation{Status:"success"}
 
-func (h *handler) apiRefreshAll(w http.ResponseWriter) {
-	bw := &bytes.Buffer{}
+	//tr := &bytes.Buffer{}
+	//logg := log.New(tr, "", log.LstdFlags)
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	//if !h.unpinRepo(repo, logg) {
+	//	op.Status = "Error unpinning repo"
+	//}
 
-	logg := log.New(bw, "", log.LstdFlags)
+	//op.Transcript = string(tr.Bytes())
 
-	repos := h.getRepos()
+	//marsh, err := json.Marshal(op)
 
-	fail := false
-
-	for path, d := range repos {
-		logg.Printf("Refreshing %s", d.repo)
-		if h.refreshRepo(path, logg) {
-			logg.Printf("Success\n")
-			continue
-		}
-		logg.Printf("Fail\n")
-		fail = true
-	}
-
-	if fail {
-		w.WriteHeader(500)
-	}
-	w.Write(bw.Bytes())
+	//if err != nil {
+	//	w.WriteHeader(500)
+	//	w.Write([]byte(jsonFailure("Could not marshal pin info into JSON")))
+	//	return
+	//}
+	//
+	//w.Write(marsh)
 }
 
 func (h *handler) apiEvict(w http.ResponseWriter, repo string) {
-	bw := &bytes.Buffer{}
+	h.apiSimpleTr(w, func(logg *log.Logger) bool {
+		return h.evictRepo(repo, logg)
+	})
+}
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+func (h *handler) apiRefreshAll(w http.ResponseWriter) {
 
-	logg := log.New(bw, "", log.LstdFlags)
+	repos := jsonableRefreshAll{Repos: map[string]jsonableRefresh{}}
 
-	if h.evictRepo(repo, logg) {
-		logg.Printf("Success\n")
-		w.Write(bw.Bytes())
-		return
+	h.reposLock.RLock()
+	for path, d := range h.repos {
+		repos.Repos[path] = jsonableRefresh{Name: d.repo, Status: "success"}
+	}
+	h.reposLock.RUnlock()
+
+
+	fails := 0
+
+	for p, r := range repos.Repos {
+		tr := &bytes.Buffer{}
+		logg := log.New(tr, "", log.LstdFlags)
+		if !h.refreshRepo(p, logg) {
+			r.Status = "Refresh failed"
+			fails++
+		}
+		r.Transcript = string(tr.Bytes())
+		repos.Repos[p] = r
 	}
 
-	logg.Printf("Fail\n")
-	w.WriteHeader(500)
-	w.Write(bw.Bytes())
+	if fails != 0 {
+		w.WriteHeader(500)
+	}
+
+	repos.Fails = fails
+	marsh, err := json.Marshal(repos)
+
+	if err != nil {
+		marsh = []byte(jsonFailure(
+			"Failed to marshal refresh results into JSON",
+			fmt.Sprintf("Fails: %s", fails),
+		))
+	}
+
+	w.Write(marsh)
 }
 
 func (h *handler) api(w http.ResponseWriter, req *http.Request) {

@@ -239,25 +239,6 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		if hasPostfix(path, infoRefs) {
-			repo := chopInfoRefs(relpath)
-
-			// Authenticate
-			if !h.requireAuth(w, req, false) {
-				return
-			}
-
-			log.Printf("Running pullthrough on '%s'", repo)
-
-			if !h.fetchRepo(repo, log.Default(), "https") {
-				h.serve404(w)
-				return
-			}
-
-			h.serveFile(w, relpath)
-			return
-		}
-
 		log.Printf("'%s' doesn't exist", relpath)
 		h.serve404(w)
 		return

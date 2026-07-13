@@ -42,7 +42,7 @@ type handler struct {
 	maxDiskUsage int64
 	diskUsagePolicy string
 
-	totalRequests atomic.Uint64
+	totalRequests, cacheMisses, cacheHits atomic.Uint64
 }
 
 type tokenInfo struct {
@@ -577,6 +577,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Auth
 	if h.auth == "all" {
 		id, token, ok := req.BasicAuth()
 		if !ok || !h.validateCredentials(id, token, false) {
@@ -585,11 +586,13 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	// Inject repo index
 	if req.Method == "GET" && req.URL.Path == "/repos.txt" {
 		h.serveRepoIndex(w)
 		return
 	}
 
+	// Admin remote control panel API
 	if req.Method == "GET" && strings.HasPrefix(req.URL.Path, "/-/") {
 		if !h.requireAuth(w, req, true) {
 			log.Printf("Invalid auth")
@@ -606,11 +609,18 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Smart ref advertisement
-	if req.Method == "GET" && hasPostfix(req.URL.Path, infoRefs) && svc == "git-upload-pack"{
+	// Request for ../info/refs, a start of the git repo transmission. Either
+	// pull (if not available) or just serve
+	if req.Method == "GET" && hasPostfix(req.URL.Path, infoRefs) {
 		repo := chopInfoRefs(filepath.Clean("/" + req.URL.Path))
 
 		// Doesn't exist, so pull
 		if _, err := os.Stat(h.root + repo); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				fmt.Printf("Can't stat '%s': %v", repo, err)
+				h.serve500(w)
+				return
+			}
 
 			// Authenticate
 			if !h.requireAuth(w, req, false) {
@@ -623,9 +633,19 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				h.serve404(w)
 				return
 			}
+			h.cacheMisses.Add(1)
 		}
 
-		h.git.ServeHTTP(w, req)
+		h.cacheHits.Add(1)
+		// Smart client
+		if svc == "git-upload-pack" {
+			h.git.ServeHTTP(w, req)
+
+		// Dumb client
+		} else {
+			h.serveFS(w, req)
+		}
+
 		return
 	}
 	
@@ -641,6 +661,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Dumb client
 	if req.Method == "GET" {
 		h.serveFS(w, req)	
 		return
@@ -1090,6 +1111,14 @@ func main() {
 	case "lru", "deny", "warn":
 	default:
 		log.Fatal("disk:policy: must be either 'lru', 'deny', or 'warn'")
+	}
+
+	maxDiskUsage := parseDiskSize(config.Disk.Max)
+	if maxDiskUsage == 0 {
+		log.Fatal("disk:max: may not be zero")
+	}
+	if maxDiskUsage <= 32 * 1024 {
+		log.Printf("Warning: disk:max set to less than 32K, that might be way too little")
 	}
 
 	root, err = expandPath(config.Root)

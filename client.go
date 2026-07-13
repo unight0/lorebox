@@ -10,6 +10,8 @@ import (
 	"log"
 	"io"
 	"flag"
+	"encoding/json"
+	"time"
 	"fmt"
 )
 
@@ -60,7 +62,9 @@ func readBody(body io.Reader) string {
 }
 
 func sayStatusCode(code int) {
-	fmt.Printf("status %d\n", code)
+	if code != 200 {
+		fmt.Printf("status %d\n", code)
+	}
 }
 
 func (c *clientContext) simple(what string) {
@@ -78,7 +82,104 @@ func (c *clientContext) refreshAll() {
 
 	sayStatusCode(resp.StatusCode)
 
-	fmt.Printf("%s", readBody(resp.Body))
+	body := readBody(resp.Body)
+
+	status := jsonableRefreshAll{}
+
+	if err := json.Unmarshal([]byte(body), &status); err != nil {
+		fmt.Println(err)
+		fmt.Printf("Response is: %s\n", body)
+		return
+	}
+
+	fmt.Printf("=== Force-refreshing all repos in box %s ===\n", c.box)
+	fmt.Printf("Number of repos: %d\n", len(status.Repos))
+	for p, r := range list.Repos {
+		fmt.Printf("%s:\n", r.Name)
+		fmt.Printf("    Path: %s\n", p)
+		fmt.Printf("    Size: %d\n", r.Size)
+		fmt.Printf("    Pinned: %t\n", r.Pinned)
+		if !r.LastError.IsZero() {
+			fmt.Printf("    Error fetching at: %s\n", r.LastError)
+		}
+	}
+}
+
+func (c *clientContext) list() {
+	resp := c.apiRequest("list")
+
+	sayStatusCode(resp.StatusCode)
+
+	body := readBody(resp.Body)
+
+	list := jsonableRepos{}
+
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		fmt.Println(err)
+		fmt.Printf("Response is: %s\n", body)
+		return
+	}
+
+	fmt.Printf("=== Listing repos in box %s ===\n", c.box)
+	fmt.Printf("Number of repos: %d\n", len(list.Repos))
+	fmt.Printf("Total repo size on disk: %d\n", list.TotalSize)
+	for p, r := range list.Repos {
+		fmt.Printf("%s:\n", r.Name)
+		fmt.Printf("    Path: %s\n", p)
+		fmt.Printf("    Size: %d\n", r.Size)
+		fmt.Printf("    Pinned: %t\n", r.Pinned)
+		if !r.LastError.IsZero() {
+			fmt.Printf("    Error fetching at: %s\n", r.LastError)
+		}
+	}
+}
+
+func (c *clientContext) status() {
+	resp := c.apiRequest("status")
+
+	sayStatusCode(resp.StatusCode)
+
+	body := readBody(resp.Body)
+
+	status := jsonableStatus{}
+
+	if err := json.Unmarshal([]byte(body), &status); err != nil {
+		fmt.Println(err)
+		fmt.Printf("Response is: %s\n", body)
+		return
+	}
+
+	hits := status.Cache.Hits
+	misses := status.Cache.Hits
+	cacheHitRatio := 0.0
+	if hits + misses != 0 {
+		cacheHitRatio = float64(hits)/float64(hits + misses) * 100
+	}
+
+	percentDiskUsage := 0.0
+	if status.Disk.Max != 0 {
+		percentDiskUsage = float64(status.Disk.Usage) / float64(status.Disk.Max) * 100
+	}
+
+	if status.Status != "success" {
+		fmt.Printf("Some internal error has occured; status: %s\n", status.Status)
+		return
+	}
+
+	fmt.Printf("=== Status for box %s ===\n", c.box)
+	fmt.Printf("> %s\n", status.Banner)
+	fmt.Printf("Version: %s == %s\n", status.Version, status.ID)
+	fmt.Printf("Uptime:	%s\n", time.Duration(status.UptimeSec) * time.Second)
+	fmt.Printf("Total number of http requests: %d\n", status.TotalHTTPReqs)
+	fmt.Printf("Disk:\n")
+	fmt.Printf("    Usage:  %d\n", status.Disk.Usage)
+	fmt.Printf("    Max:    %d\n", status.Disk.Max)
+	fmt.Printf("    Used    %.2f%%\n", percentDiskUsage)
+	fmt.Printf("    Policy: %s\n", status.Disk.Policy)
+	fmt.Printf("Cache:\n")
+	fmt.Printf("    Hits:   %d\n", status.Cache.Hits)
+	fmt.Printf("    Misses: %d\n", status.Cache.Misses)
+	fmt.Printf("    CHR:    %.2f\n", cacheHitRatio)
 }
 
 func (c *clientContext) refresh() {
@@ -256,10 +357,10 @@ func client() {
 		cl.refreshAll()
 		return
 	case "list":
-		cl.simple("list")
+		cl.list()
 		return
 	case "status":
-		cl.simple("status")
+		cl.status()
 		return
 	case "effective-config":
 		cl.simple("effective-config")

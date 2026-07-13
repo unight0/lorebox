@@ -48,6 +48,10 @@ git and uses `git-http-backend` for smart HTTP).
 ```sh
 go build
 ```
+or
+```sh
+go install
+```
 
 ## Quick start (server)
 
@@ -58,7 +62,7 @@ go build
 2. Generate a token and paste the server half into `lorebox.yml`:
 
    ```sh
-   ./lorebox gen-token
+   lorebox gen-token
    ```
 
 3. (Optional) Enable HTTPS by pointing `https: certificate:`/`key:` at your
@@ -67,7 +71,7 @@ go build
 4. Run:
 
    ```sh
-   ./lorebox serve -config lorebox.yml
+   lorebox serve -config lorebox.yml
    ```
 
    `-listen` and `-root` override the config; `-insecure` disables TLS even
@@ -95,9 +99,13 @@ Or set up lorebox as a git credential helper so plain URLs work:
 2. Register lorebox with git:
 
    ```sh
-   ./lorebox register
+   lorebox register
    git clone https://box.example.net/github.com/alice/project
-   ```
+    ```
+
+Note that you must  run `lorebox register` every time you add a new host
+to you client config, because it registers itself as an authenticator
+on a per-host basis, not globally.
 
 ## Remote control
 
@@ -105,7 +113,7 @@ With an `admin`-level token configured in `client.yml`, the same binary
 drives the box remotely:
 
 ```sh
-lorebox status                          # uptime, storage, request count
+lorebox status                          # uptime, storage, request count, etc.
 lorebox list                            # cached repos, sizes, pin state
 lorebox fetch /github.com/alice/project    # cache a repo ahead of time
 lorebox refresh /github.com/alice/project  # refresh one repo now

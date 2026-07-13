@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"runtime/debug"
+	"sync"
 )
 
 func hasPostfix(str, postfix string) bool {
@@ -30,38 +31,44 @@ func (h *handler) chopRoot(path string) string {
 	return path
 }
 
-func fullSelfID() (id string) {
-	id = "lorebox " + loreboxVersion
+var fullSelfIDOnce sync.Once
+var fullSelfIDVar string
+func fullSelfID() string {
 
-	info, ok := debug.ReadBuildInfo()
+	fullSelfIDOnce.Do(func() {
+		id := "lorebox " + loreboxVersion
 
-	if !ok {
-		return
-	}
+		info, ok := debug.ReadBuildInfo()
 
-	id += " "
-
-	for _, s := range info.Settings {
-		//if s.Key == "vcs" {
-		//	id += s.Value + " "
-		//}
-		if s.Key == "vcs.revision" {
-
-			// Shorten it
-			if len(s.Value) > 7 {
-				s.Value = s.Value[:7]
-			}
-
-			id += s.Value + " "
+		if !ok {
+			return
 		}
-		if s.Key == "vcs.modified" {
-			if s.Value == "true" {
-				id += "modified "
+
+		id += " "
+
+		for _, s := range info.Settings {
+			//if s.Key == "vcs" {
+			//	id += s.Value + " "
+			//}
+			if s.Key == "vcs.revision" {
+
+				// Shorten it
+				if len(s.Value) > 7 {
+					s.Value = s.Value[:7]
+				}
+
+				id += s.Value + " "
+			}
+			if s.Key == "vcs.modified" {
+				if s.Value == "true" {
+					id += "modified "
+				}
 			}
 		}
-	}
+		fullSelfIDVar = id
+	})
 
-	return
+	return fullSelfIDVar
 }
 
 // Maybe rework this later

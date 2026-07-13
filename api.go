@@ -99,57 +99,37 @@ func (h *handler) apiStatus(w http.ResponseWriter) {
 }
 
 func (h *handler) apiEffectiveConfig(w http.ResponseWriter) {
-	bw := &bytes.Buffer{}
+	w.Header().Set("Content-Type", "text/json; charset=utf-8")
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	ec := jsonableEffectiveConfig{Status:"success"}
 
 	out, err := yaml.Marshal(h.effectiveConfig)
-
 	if err != nil {
-		bw.WriteString(fmt.Sprintf("Error: %v\n", err))
-		w.WriteHeader(500)
-		w.Write(bw.Bytes())
-		return
+		ec.Status = fmt.Sprintf("Error: %v\n", err)
 	}
 
-	bw.Write(out)
-	w.Write(bw.Bytes())
+	ec.Config = string(out)
+
+	marsh, err := json.Marshal(ec)
+
+	if err != nil {
+		w.WriteHeader(500)
+		marsh = []byte(jsonFailure("Could not marshal response into JSON", ec.Status))
+	}
+	
+	w.Write(marsh)
 }
 
 func (h *handler) apiFetch(w http.ResponseWriter, repo string) {
-	bw := &bytes.Buffer{}
-
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-
-	logg := log.New(bw, "", log.LstdFlags)
-
-	if h.fetchRepo(repo, logg, "https") {
-		logg.Printf("Success\n")
-		w.Write(bw.Bytes())
-		return
-	}
-	
-	logg.Printf("Fail\n")
-	w.WriteHeader(500)
-	w.Write(bw.Bytes())
+	h.apiSimpleTr(w, func (logg *log.Logger) bool {
+		return h.fetchRepo(repo, logg, "https")
+	})
 }
 
 func (h *handler) apiFetchHttp(w http.ResponseWriter, repo string) {
-	bw := &bytes.Buffer{}
-
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-
-	logg := log.New(bw, "", log.LstdFlags)
-
-	if h.fetchRepo(repo, logg, "http") {
-		logg.Printf("Success\n")
-		w.Write(bw.Bytes())
-		return
-	}
-	
-	logg.Printf("Fail\n")
-	w.WriteHeader(500)
-	w.Write(bw.Bytes())
+	h.apiSimpleTr(w, func (logg *log.Logger) bool {
+		return h.fetchRepo(repo, logg, "http")
+	})
 }
 
 func (h *handler) apiSimpleTr(w http.ResponseWriter, f func(*log.Logger) bool) {
@@ -179,56 +159,12 @@ func (h *handler) apiPin(w http.ResponseWriter, repo string) {
 	h.apiSimpleTr(w, func(logg *log.Logger) bool {
 		return h.pinRepo(repo, logg)
 	})
-	//w.Header().Set("Content-Type", "text/json; charset=utf-8")
-
-	//op := jsonableOperation{Status:"success"}
-
-	//tr := &bytes.Buffer{}
-	//logg := log.New(tr, "", log.LstdFlags)
-
-	//if !h.pinRepo(repo, logg) {
-	//	op.Status = "Error pinning repo"
-	//}
-
-	//op.Transcript = string(tr.Bytes())
-
-	//marsh, err := json.Marshal(op)
-
-	//if err != nil {
-	//	w.WriteHeader(500)
-	//	w.Write([]byte(jsonFailure("Could not marshal pin info into JSON")))
-	//	return
-	//}
-	//
-	//w.Write(marsh)
 }
 
 func (h *handler) apiUnpin(w http.ResponseWriter, repo string) {
 	h.apiSimpleTr(w, func(logg *log.Logger) bool {
 		return h.unpinRepo(repo, logg)
 	})
-	//w.Header().Set("Content-Type", "text/json; charset=utf-8")
-
-	//op := jsonableOperation{Status:"success"}
-
-	//tr := &bytes.Buffer{}
-	//logg := log.New(tr, "", log.LstdFlags)
-
-	//if !h.unpinRepo(repo, logg) {
-	//	op.Status = "Error unpinning repo"
-	//}
-
-	//op.Transcript = string(tr.Bytes())
-
-	//marsh, err := json.Marshal(op)
-
-	//if err != nil {
-	//	w.WriteHeader(500)
-	//	w.Write([]byte(jsonFailure("Could not marshal pin info into JSON")))
-	//	return
-	//}
-	//
-	//w.Write(marsh)
 }
 
 func (h *handler) apiRefresh(w http.ResponseWriter, repo string) {
@@ -237,28 +173,6 @@ func (h *handler) apiRefresh(w http.ResponseWriter, repo string) {
 	h.apiSimpleTr(w, func(logg *log.Logger) bool {
 		return h.refreshRepo(path, logg)
 	})
-	//w.Header().Set("Content-Type", "text/json; charset=utf-8")
-
-	//op := jsonableOperation{Status:"success"}
-
-	//tr := &bytes.Buffer{}
-	//logg := log.New(tr, "", log.LstdFlags)
-
-	//if !h.unpinRepo(repo, logg) {
-	//	op.Status = "Error unpinning repo"
-	//}
-
-	//op.Transcript = string(tr.Bytes())
-
-	//marsh, err := json.Marshal(op)
-
-	//if err != nil {
-	//	w.WriteHeader(500)
-	//	w.Write([]byte(jsonFailure("Could not marshal pin info into JSON")))
-	//	return
-	//}
-	//
-	//w.Write(marsh)
 }
 
 func (h *handler) apiEvict(w http.ResponseWriter, repo string) {
@@ -359,7 +273,7 @@ func (h *handler) api(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Invalid API point
+	// Invalid API endpoint
 	h.serve400(w)
 }
 

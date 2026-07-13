@@ -48,3 +48,8 @@ type jsonableRefreshAll struct {
 	Repos map[string]jsonableRefresh	`json:"repos"`
 	Fails int							`json:"fails"`
 }
+
+type jsonableEffectiveConfig struct {
+	Status string		`json:"status"`
+	Config string		`json:"config"`
+}

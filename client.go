@@ -67,14 +67,6 @@ func sayStatusCode(code int) {
 	}
 }
 
-func (c *clientContext) simple(what string) {
-	resp := c.apiRequest(what)
-
-	sayStatusCode(resp.StatusCode)
-
-	fmt.Printf("%s", readBody(resp.Body))
-}
-
 func (c *clientContext) refreshAll() {
 	fmt.Printf("This may take a while -- please be patient...\n")
 
@@ -84,24 +76,22 @@ func (c *clientContext) refreshAll() {
 
 	body := readBody(resp.Body)
 
-	status := jsonableRefreshAll{}
+	refresh := jsonableRefreshAll{}
 
-	if err := json.Unmarshal([]byte(body), &status); err != nil {
+	if err := json.Unmarshal([]byte(body), &refresh); err != nil {
 		fmt.Println(err)
 		fmt.Printf("Response is: %s\n", body)
 		return
 	}
 
 	fmt.Printf("=== Force-refreshing all repos in box %s ===\n", c.box)
-	fmt.Printf("Number of repos: %d\n", len(status.Repos))
-	for p, r := range list.Repos {
+	fmt.Printf("Number of repos: %d\n", len(refresh.Repos))
+	fmt.Printf("Fails: %d\n", refresh.Fails)
+	for p, r := range refresh.Repos {
 		fmt.Printf("%s:\n", r.Name)
 		fmt.Printf("    Path: %s\n", p)
-		fmt.Printf("    Size: %d\n", r.Size)
-		fmt.Printf("    Pinned: %t\n", r.Pinned)
-		if !r.LastError.IsZero() {
-			fmt.Printf("    Error fetching at: %s\n", r.LastError)
-		}
+		fmt.Printf("    Status: %s\n", r.Status)
+		fmt.Printf("%s\n", r.Transcript)
 	}
 }
 
@@ -182,22 +172,41 @@ func (c *clientContext) status() {
 	fmt.Printf("    CHR:    %.2f\n", cacheHitRatio)
 }
 
+func (c *clientContext) simple(what, description string) {
+	resp := c.apiRequest(what)
+
+	sayStatusCode(resp.StatusCode)
+
+	body := readBody(resp.Body)
+
+	op := jsonableOperation{}
+
+	if err := json.Unmarshal([]byte(body), &op); err != nil {
+		fmt.Printf("Error unmarshaling JSON: %v\n", err)
+		fmt.Printf("Reponse: `%s`\n", body)
+	}
+
+	fmt.Printf("=== Operation %s in box %s ===\n", description, c.box)
+	fmt.Printf("Status: %s\n", op.Status)
+	fmt.Printf("%s\n", op.Transcript)
+}
+
 func (c *clientContext) refresh() {
 	repo := flag.Args()[0]
 
-	c.simple("refresh/" + repo)
+	c.simple("refresh/" + repo, "refresh repo " + repo)
 }
 
 func (c *clientContext) evict() {
 	repo := flag.Args()[0]
 
-	c.simple("evict/" + repo)
+	c.simple("evict/" + repo, "evict repo " + repo)
 }
 
 func (c *clientContext) fetch() {
 	repo := flag.Args()[0]
 
-	c.simple("fetch/" + repo)
+	c.simple("fetch/" + repo, "fetch repo " + repo)
 }
 
 func (c *clientContext) fetchHttp() {
@@ -205,20 +214,40 @@ func (c *clientContext) fetchHttp() {
 
 	fmt.Printf("You are fetching %s over http. Note that this is highly insecure; a MiTM can inject arbitrary code, and you are caching it\n", repo)
 
-	c.simple("fetch-http/" + repo)
+	c.simple("fetch-http/" + repo, "fetch repo " + repo + " over http")
 }
 
 func (c *clientContext) pin() {
 	repo := flag.Args()[0]
 
-	c.simple("pin/" + repo)
+	c.simple("pin/" + repo, "pin repo " + repo)
 }
 
 func (c *clientContext) unpin() {
 	repo := flag.Args()[0]
 
-	c.simple("unpin/" + repo)
+	c.simple("unpin/" + repo, "unpin repo " + repo)
 }
+
+func (c *clientContext) effectiveConfig() {
+	resp := c.apiRequest("effective-config")
+
+	sayStatusCode(resp.StatusCode)
+
+	body := readBody(resp.Body)
+
+	ec := jsonableEffectiveConfig{}
+
+	if err := json.Unmarshal([]byte(body), &ec); err != nil {
+		fmt.Printf("Error unmarshaling JSON: %v\n", err)
+		fmt.Printf("Reponse: `%s`\n", body)
+	}
+
+	fmt.Printf("# === Current effective config of %s ===\n", c.box)
+	fmt.Printf("# Query status: %s\n", ec.Status)
+	fmt.Printf("%s\n", ec.Config)
+}
+
 const defaultConfigFile = "~/.config/lorebox/client.yml"
 
 func getConfigData(configFile string) (configData []byte) {
@@ -363,7 +392,7 @@ func client() {
 		cl.status()
 		return
 	case "effective-config":
-		cl.simple("effective-config")
+		cl.effectiveConfig()
 		return
 	default:
 		fmt.Printf("Unknown command verb: %v\n", os.Args[1])

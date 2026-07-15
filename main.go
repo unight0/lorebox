@@ -850,6 +850,7 @@ func parseDuration(s string) (time.Duration, error) {
 
 type Config struct {
 	Root string
+	Name string
 	Listen string
 
 	Auth string
@@ -1069,6 +1070,7 @@ func main() {
 
 	config := Config {
 		Root: ".",
+		Name: "unnamed",
 		Listen: ":8080",
 		Auth: "new",
 	}
@@ -1127,6 +1129,8 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Used by fullSelfID()
+	loreboxName = config.Name
 
 	tmpDir := root + "/.tmp"
 	// Wipe

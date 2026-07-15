@@ -5,6 +5,10 @@
 # Please use an absolute path here for predictability purposes
 root: "."
 
+# The name of your box. Can be anything. You can put your domain in here, e.g.
+# name: "box.bob.net"
+name: "unnamed"
+
 # Listen for incoming connections at host:port. No host/0.0.0.0 for any source
 # address, 127.0.0.1 or [::1] for loopback-only
 # Default port is 8080 for demonstration purposes. I advise either:

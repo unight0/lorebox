@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"log"
+	"fmt"
 	"strings"
 	"runtime/debug"
 	"sync"
@@ -31,12 +32,16 @@ func (h *handler) chopRoot(path string) string {
 	return path
 }
 
+// Why global var? fullSelfID() should be accessible from any part of the
+// program, not only handler.*. Maybe this design is unnecessary, update this
+// later
+var loreboxName = "unnamed"
 var fullSelfIDOnce sync.Once
 var fullSelfIDVar string
 func fullSelfID() string {
 
 	fullSelfIDOnce.Do(func() {
-		id := "lorebox " + loreboxVersion
+		id := fmt.Sprintf(`lorebox %s "%s"`, loreboxVersion, loreboxName)
 
 		info, ok := debug.ReadBuildInfo()
 

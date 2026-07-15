@@ -157,8 +157,9 @@ func (c *clientContext) status() {
 	}
 
 	fmt.Printf("=== Status for box %s ===\n", c.box)
-	fmt.Printf("> %s\n", status.Banner)
-	fmt.Printf("Version: %s == %s\n", status.Version, status.ID)
+	fmt.Printf("Banner: %s\n", status.Banner)
+	fmt.Printf("Version: %s\n", status.Version)
+	fmt.Printf("ID: %s\n", status.ID)
 	fmt.Printf("Uptime:	%s\n", time.Duration(status.UptimeSec) * time.Second)
 	fmt.Printf("Total number of http requests: %d\n", status.TotalHTTPReqs)
 	fmt.Printf("Disk:\n")

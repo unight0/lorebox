@@ -5,6 +5,7 @@ import (
 	"time"
 	"io"
 	"os/exec"
+	"log"
 	"os"
 )
 
@@ -34,8 +35,32 @@ func (g *gitRunner) output(args ...string) ([]byte, error) {
 	return cmd.Output()
 }
 
-func (h *handler) gitInit(path string) error {
+func (h *handler) gitInit(path string) bool {
 	git := gitRunner{h.root, h.gitTimeout, os.Stdout}
 
-	return git.run("init", "--bare", path)
+	err := git.run("init", "--bare", path)
+
+	if err != nil {
+		return false
+	}
+
+	git.path = path
+	err = git.run("config", "http.receivepack", "true")
+	if err != nil {
+		return false
+	}
+
+	return h.updateServerInfo(path, log.Default())
 }
+
+func (h *handler) updateServerInfo(path string, logg *log.Logger) bool {
+	git := gitRunner{path, h.gitTimeout, logg.Writer()}
+
+	if err := git.run("update-server-info"); err != nil {
+		logg.Printf("Failed to run update-server-info: %s, %v", path, err)
+		return false
+	}
+
+	return true
+}
+

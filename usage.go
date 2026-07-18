@@ -25,9 +25,9 @@ func usage() {
 	fmt.Printf("  -help             Options help\n")
 
 	fmt.Printf("\nUtilities:\n")
-	fmt.Printf("gen-token       Generate access token credentials\n")
-	fmt.Printf("register        Register lorebox as authenticator for your loreboxes with git\n")
-	fmt.Printf("credential get  Credential helper for git, not for manual use\n")
+	fmt.Printf("gen-token <username> Generate access token credentials\n")
+	fmt.Printf("register             Register lorebox as authenticator for your loreboxes with git\n")
+	fmt.Printf("credential get       Credential helper for git, not for manual use\n")
 
 	fmt.Printf("\nServer:\n")
 	fmt.Printf("serve           Run the lorebox server\n")

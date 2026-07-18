@@ -190,17 +190,6 @@ func (h *handler) configureNewRepo(path string, logg *log.Logger) bool {
 	return true
 }
 
-func (h *handler) updateServerInfo(path string, logg *log.Logger) bool {
-	git := gitRunner{path, h.gitTimeout, logg.Writer()}
-
-	if err := git.run("update-server-info"); err != nil {
-		logg.Printf("Failed to run update-server-info: %s, %v", path, err)
-		return false
-	}
-
-	return true
-}
-
 func dirSize(path string) (size int64, err error) {
 	err = filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -489,7 +478,7 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger, scheme string) bool {
 func (h *handler) validateCredentials(id, token string, requiredAuthLevel int) (int, bool) {
 	log.Printf("Validating '%s'", id)
 
-	hash := sha256.Sum256([]byte(token))
+	hash := sha256.Sum256([]byte(id + token))
 	enHash := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	servToken, ok := h.tokens[id]
@@ -564,7 +553,6 @@ func (h *handler) handlePush(w http.ResponseWriter, req *http.Request) {
 	who, level, ok := h.requireAuth(w, req, authLevelPush)
 	if !ok {
 		log.Printf("Invalid auth: %s", who)
-		h.serve400(w)
 		return
 	}
 
@@ -584,11 +572,13 @@ func (h *handler) handlePush(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Doesn't exist, so create
-	if err := h.gitInit(h.root + repo); err != nil {
-		log.Printf("Couldn't init %s: %v", repo, err)
+	if !h.gitInit(h.root + repo) {
+		log.Printf("Couldn't init %s", repo)
 		h.serve500(w)
 		return
 	}
+
+	h.git.ServeHTTP(w, req)
 }
 
 func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc string) {
@@ -604,10 +594,34 @@ func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc strin
 		}
 
 		// Authenticate
-		if _, _, ok := h.requireAuth(w, req, authLevelFetch); !ok {
+		who, level, ok := h.requireAuth(w, req, authLevelFetch)
+		if !ok {
 			return
 		}
 
+		// For a self-hosted repo, we create it if we have the permissions
+		if selfHosted(repo) {
+			owner, repoName := parseSelfHosted(req.URL.Path)
+
+			// You can only push to your own repo, unless you are an admin
+			if who != owner && level != authLevelAdmin {
+				log.Printf("%s tried to push-create into repo they don't own: %s/%s", who, owner, repoName)
+				h.serve400(w)
+				return
+			}
+
+			if !h.gitInit(h.root + repo) {
+				log.Printf("Couldn't init %s: %v", repo, err)
+				h.serve500(w)
+				return
+			}
+
+			h.git.ServeHTTP(w, req)
+
+			return
+		} 
+
+		// Fetch repo
 		log.Printf("Running pullthrough on '%s'", repo)
 		
 		if !h.fetchRepo(repo, log.Default(), "https") {
@@ -939,44 +953,43 @@ type Config struct {
 	}
 }
 
-func generateCredentials() {
+func generateCredentials(username string) {
+	if username == "" {
+		fmt.Printf("Username must not be an empty string\n")
+		usage()
+		return
+	}
+
 	token := make([]byte, 32)
-	tokenId := make([]byte, 4)
 
 	_, err := cr.Read(token)
 	if err != nil {
 		log.Fatalf("Could not generate token: %v", err)
 	}
 
-	_, err = cr.Read(tokenId)
-	if err != nil {
-		log.Fatalf("Could not generate token id: %v", err)
-	}
-
 	enToken := base64.RawURLEncoding.EncodeToString(token)
-	enTokenId := "id-" + base64.RawURLEncoding.EncodeToString(tokenId)
 
 	// No need for salt, token is already completely random
-	hash := sha256.Sum256([]byte(enToken))
+	hash := sha256.Sum256([]byte(username + enToken))
 	enHash := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	fmt.Printf("# Successfully generated token credentials\n")
 	fmt.Printf("# Public (server) component\n")
 	fmt.Printf("# Paste this into your lorebox.yml:\n")
 	fmt.Printf("tokens:\n")
-	fmt.Printf("  - id: \"%s\"\n", enTokenId)
+	fmt.Printf("  - id: \"%s\"\n", username)
 	fmt.Printf("    hash: \"%s\"\n", enHash)
-	fmt.Printf("    level: <select \"fetch\" or \"admin\">\n")
+	fmt.Printf("    level: <select \"fetch\", \"push\", or \"admin\">\n")
 
 	fmt.Printf("\n# Private component\n")
 	fmt.Printf("# Use this as user:pass when using git, e.g.:\n")
-	fmt.Printf("# git clone https://%s:%s@box.bob.net/alice.net/alice/repo\n", enTokenId, enToken)
+	fmt.Printf("# git clone https://%s:%s@box.bob.net/alice.net/alice/repo\n", username, enToken)
 	fmt.Printf("# Or you can paste this into your ~/.config/lorebox/client.yml:\n")
 	fmt.Printf("tokens:\n")
-	fmt.Printf("  \"<your box>\": \"%s:%s\"\n", enTokenId, enToken)
-	fmt.Printf("# Then run 'lorebox register' to regsiter lorebox as your git's auth provider for this box\n")
+	fmt.Printf("  \"<your box>\": \"%s:%s\"\n", username, enToken)
+	fmt.Printf("# Then run 'lorebox register' to register lorebox as your git's auth provider for this box\n")
 
-	fmt.Printf("\n%s:%s\n", enTokenId, enToken)
+	fmt.Printf("\n%s:%s\n", username, enToken)
 }
 
 func registerWithGit() {
@@ -1079,13 +1092,19 @@ func main() {
 
 	switch os.Args[1] {
 	case "gen-token":
-		generateCredentials()
+		if len(os.Args) != 3 {
+			fmt.Printf("lorebox gen-token requires 1 argument: username\n")
+			usage()
+			return
+		}
+		generateCredentials(os.Args[2])
 		return
 	case "register":
 		registerWithGit()
 		return
 	case "credential":
 		if len(os.Args) < 3 || os.Args[2] != "get" {
+			fmt.Printf("Syntax: 'lorebox credential get', all parts mandatory\n")
 			usage()
 			return
 		}
@@ -1190,6 +1209,11 @@ func main() {
 	os.RemoveAll(tmpDir)
 	// Create
 	if err := os.Mkdir(tmpDir, 0700); err != nil {
+		log.Fatal(err)
+	}
+
+	// Self-hosted repos go here
+	if err := os.MkdirAll(root + "/~", 0700); err != nil {
 		log.Fatal(err)
 	}
 

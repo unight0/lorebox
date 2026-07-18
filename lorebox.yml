@@ -55,8 +55,8 @@ disk:
 # "fetch" users may trigger a remote repository fetch, while "admin" users can
 # also use api for remote control of the box
 tokens:
-  - user: "admin"
-    hash: "VoFeBgqWJ_R3GARf0jEZIJtSLBNvriEexvV7_e32DUU"
+  - id: "admin"
+    hash: "7Kkm-owmxvCmrKE4U6OzSEuPhhyIMzNtvYWkS8yfJjo"
     level: "admin"
 
 # Certificate and key to use for HTTPS. Obtain them from a provider like

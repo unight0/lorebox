@@ -55,16 +55,16 @@ disk:
 # "fetch" users may trigger a remote repository fetch, while "admin" users can
 # also use api for remote control of the box
 tokens:
-  - id: "id-XYv1wQ"
-    hash: "xY3QH-S8usyQVIOIRfTU8q78DLKLNsI5fI9Lj3btGdA"
-    level: admin
+  - user: "admin"
+    hash: "VoFeBgqWJ_R3GARf0jEZIJtSLBNvriEexvV7_e32DUU"
+    level: "admin"
 
 # Certificate and key to use for HTTPS. Obtain them from a provider like
 # Letsencrypt, etc. Please use absolute paths here for predictable behaviour
 # independent from the location you run the binary from
-https:
- certificate: "cert.pem"
- key: "key.pem"
+# https:
+#  certificate: "cert.pem"
+#  key: "key.pem"
 
 
 # Ignore, just an idea

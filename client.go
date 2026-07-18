@@ -30,6 +30,7 @@ func (c *clientContext) api(name string) string {
 
 func (c *clientContext) apiRequest(what string) *http.Response {
 	req, err := http.NewRequest(http.MethodGet, c.api(what), nil)
+
 	if err != nil {
 		log.Fatalf("Http request error: %v", err)
 	}
@@ -118,6 +119,8 @@ func (c *clientContext) list() {
 		fmt.Printf("    Path: %s\n", p)
 		fmt.Printf("    Size: %d\n", r.Size)
 		fmt.Printf("    Pinned: %t\n", r.Pinned)
+		fmt.Printf("    Requested: %d times\n", r.Requests)
+		fmt.Printf("    Self-hosted: %t\n", r.SelfHosted)
 		if !r.LastError.IsZero() {
 			fmt.Printf("    Error fetching at: %s\n", r.LastError)
 		}
@@ -262,7 +265,7 @@ func getConfigData(configFile string) (configData []byte) {
 			log.Fatal(err)
 		}
 
-		configFile = strings.Replace(configFile, "~/", home+"/", -1)
+		configFile = strings.ReplaceAll(configFile, "~/", home+"/")
 
 		configFile, err = filepath.Abs(configFile)
 		if err != nil {

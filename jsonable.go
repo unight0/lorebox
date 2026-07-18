@@ -23,7 +23,9 @@ type jsonableStatus struct {
 type jsonableRepo struct {
 	Name string			`json:"path"`
 	Size int64			`json:"size"`
+	Requests int64		`json:"requests"`
 	Pinned bool			`json:"pinned"`
+	SelfHosted bool		`json:"self-hosted"`
 	LastError time.Time	`json:"last-error"`
 }
 

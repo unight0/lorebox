@@ -23,6 +23,8 @@ var robotstxt []byte
 var htmlGenericBegin []byte
 //go:embed static/generic-end.html
 var htmlGenericEnd []byte
+//go:embed static/style.css
+var cssStyle string
 
 // Doesn't exist
 func (h *handler) serve404(w http.ResponseWriter) {

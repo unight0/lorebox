@@ -1,0 +1,35 @@
+* {
+    color: #d0d0d0;
+    text-align: justify;
+}
+
+body {
+    background-color: #000000;
+}
+
+a {
+    color: #87ceeb;
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+/*
+a:visited {
+    color: #ce6565;
+}
+*/
+
+.no {
+    color: #ce6565;
+}
+
+.yes {
+    color: #2e6f40;
+}
+
+.meta {
+    color: #999999;
+}

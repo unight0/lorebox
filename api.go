@@ -32,6 +32,8 @@ func (h *handler) apiList(w http.ResponseWriter) {
 			LastError: d.lastErr,
 			Pinned: h.repoPinned(d.repo, log.Default()),
 			Size: d.size,
+			Requests: d.requests,
+			SelfHosted: d.selfHosted,
 		}
 
 		repos.Repos[p] = repo
@@ -70,7 +72,7 @@ func (h *handler) apiStatus(w http.ResponseWriter) {
 		Status: "success",
 		ID: fullSelfID(),
 		Version: loreboxVersion,
-		UptimeSec: int(time.Now().Sub(h.startup).Seconds()),
+		UptimeSec: int(time.Since(h.startup).Seconds()),
 		TotalHTTPReqs: int(h.totalRequests.Load()),
 	}
 	status.Disk.Usage = size
@@ -84,13 +86,12 @@ func (h *handler) apiStatus(w http.ResponseWriter) {
 	if err != nil {
 		log.Print(err)
 		status = jsonableStatus{}
-		if err != nil {
-			bw.WriteString(jsonFailure("Could not marshal status into JSON", status.Status))
 
-			w.WriteHeader(500)
-			w.Write(bw.Bytes())
-			return
-		}
+		bw.WriteString(jsonFailure("Could not marshal status into JSON", status.Status))
+
+		w.WriteHeader(500)
+		w.Write(bw.Bytes())
+		return
 	}
 
 	bw.Write(marsh)
@@ -187,6 +188,11 @@ func (h *handler) apiRefreshAll(w http.ResponseWriter) {
 
 	h.reposLock.RLock()
 	for path, d := range h.repos {
+		// Can't refresh a self-hosted repo
+		if d.selfHosted {
+			continue
+		}
+
 		repos.Repos[path] = jsonableRefresh{Name: d.repo, Status: "success"}
 	}
 	h.reposLock.RUnlock()
@@ -194,14 +200,15 @@ func (h *handler) apiRefreshAll(w http.ResponseWriter) {
 
 	fails := 0
 
+	tr := &bytes.Buffer{}
 	for p, r := range repos.Repos {
-		tr := &bytes.Buffer{}
+		tr.Reset()
 		logg := log.New(tr, "", log.LstdFlags)
 		if !h.refreshRepo(p, logg) {
 			r.Status = "Refresh failed"
 			fails++
 		}
-		r.Transcript = string(tr.Bytes())
+		r.Transcript = tr.String()
 		repos.Repos[p] = r
 	}
 
@@ -215,7 +222,7 @@ func (h *handler) apiRefreshAll(w http.ResponseWriter) {
 	if err != nil {
 		marsh = []byte(jsonFailure(
 			"Failed to marshal refresh results into JSON",
-			fmt.Sprintf("Fails: %s", fails),
+			fmt.Sprintf("Fails: %d", fails),
 		))
 	}
 

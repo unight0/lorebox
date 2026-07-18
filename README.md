@@ -103,8 +103,8 @@ Or set up lorebox as a git credential helper so plain URLs work:
    git clone https://box.example.net/github.com/alice/project
     ```
 
-Note that you must  run `lorebox register` every time you add a new host
-to you client config, because it registers itself as an authenticator
+Note that you must run `lorebox register` every time you add a new host
+to your client config, because it registers itself as an authenticator
 on a per-host basis, not globally.
 
 ## Remote control

@@ -16,6 +16,7 @@ import (
 	"flag"
 	"strconv"
 	"sync"
+	"maps"
 	"sort"
 	"bufio"
 	"context"
@@ -47,12 +48,13 @@ type handler struct {
 
 type tokenInfo struct {
 	hash string
-	level string
+	level int
 }
 
 type repoDescription struct {
 	repo string
-	size int64
+	size, requests int64
+	selfHosted bool
 	lastErr time.Time
 	cancelRefresher func()
 }
@@ -62,25 +64,17 @@ const loreboxVersion = "v0.4"
 var infoRefs = "/info/refs"
 
 func (h *handler) refreshDefaultBranch(path string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--symref", "origin", "HEAD")
-	cmd.Dir = path
+	git := gitRunner{path, h.gitTimeout, os.Stdout}
 
-	out, err := cmd.Output()
+	out, err := git.output("ls-remote", "--symref", "origin", "HEAD")
 	if err != nil {
 		log.Printf("Failed to refresh current default branch: %s, %v", path, err)
 		return false
 	}
 
-	if err != nil {
-		log.Printf("Failed to get output: %v", err)
-		return false
-	}
-
 
 	// Parsing below
-	// We are searching for a line that looks like 'ref: <...>\tHEAD'
+	// We are searching for a line that looks like 'ref: refs/heads/XXX\tHEAD'
 
 	ref := ""
 
@@ -92,16 +86,12 @@ func (h *handler) refreshDefaultBranch(path string) bool {
 	}
 
 	if ref == "" {
-		log.Printf("Failed to refresh current default branch: found no 'ref: ': %s", path)
+		log.Printf("Failed to refresh current default branch: found no 'ref: ' upstream: %s", path)
 		return false
 	}
 
-	ctx, cancel = context.WithTimeout(context.Background(), h.gitTimeout)
-	defer cancel()
-	cmd = exec.CommandContext(ctx, "git", "symbolic-ref", "HEAD", "refs/heads/" + ref)
-	cmd.Dir = path
 
-	if err := cmd.Run(); err != nil {
+	if err := git.run("symbolic-ref", "HEAD", "refs/heads/" + ref); err != nil {
 		log.Printf("Failed to refresh current default branch: %s, %v", path, err)
 		return false
 	}
@@ -115,26 +105,26 @@ func (h *handler) getRepos() map[string]repoDescription {
 
 	repos := make(map[string]repoDescription)
 
-	for k, v := range h.repos {
-		repos[k] = v
-	}
+	maps.Copy(repos, h.repos)
 
 	return repos
 }
 
 func (h *handler) refreshRepo(path string, logg *log.Logger) bool {
+	repo := h.chopRoot(path)
+
+	if selfHosted(repo) {
+		logg.Printf("Cannot refresh %s: repo is self-hosted", repo)
+		return false
+	}
+
 	// Non-critical if fails
 	h.refreshDefaultBranch(path)
 
-	ctx, cancel := context.WithTimeout(context.Background(), h.gitCloneTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "fetch", "--prune", "origin")
-	cmd.Stdout = logg.Writer()
-	cmd.Stderr = logg.Writer()
-	cmd.Dir = path
+	git := gitRunner{path, h.gitCloneTimeout, logg.Writer()}
 
-	if err := cmd.Run(); err != nil {
-		logg.Printf("Failed to refresh repo: %s, %v", path, err)
+	if err := git.run("fetch", "--prune", "origin"); err != nil {
+		logg.Printf("Failed to refresh repo %s: %v", path, err)
 		return false
 	}
 
@@ -144,6 +134,7 @@ func (h *handler) refreshRepo(path string, logg *log.Logger) bool {
 }
 
 func (h *handler) evictRepo(repo string, logg *log.Logger) bool {
+
 	path := filepath.Clean(h.root + "/" + repo)
 
 	h.reposLock.RLock()
@@ -167,46 +158,31 @@ func (h *handler) evictRepo(repo string, logg *log.Logger) bool {
 		return false
 	}
 
-	h.repos[path].cancelRefresher()
+	// Self-hosted repos don't have a refresher in the first place
+	if !h.repos[path].selfHosted {
+		h.repos[path].cancelRefresher()
+	}
+
 	delete(h.repos, path)
 
 	return true
 }
 
+// Config for the future, so git doesn't lose refs/lorebox/*
 func (h *handler) configureNewRepo(path string, logg *log.Logger) bool {
-	// Config for the future, so git doesn't lose refs/lorebox/*
-	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "config", "--unset", "remote.origin.mirror")
-	cmd.Dir = path
-	cmd.Stdout = logg.Writer()
-	cmd.Stderr = logg.Writer()
+	git := gitRunner{path, h.gitTimeout, logg.Writer()}
 
-	if err := cmd.Run(); err != nil {
+	if err := git.run("config", "--unset", "remote.origin.mirror"); err != nil {
 		logg.Printf("Failed to configure repo (unset mirror): %s, %v", path, err)
 		return false
 	}
 
-	ctx, cancel = context.WithTimeout(context.Background(), h.gitTimeout)
-	defer cancel()
-	cmd = exec.CommandContext(ctx, "git", "config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/heads/*")
-	cmd.Dir = path
-	cmd.Stdout = logg.Writer()
-	cmd.Stderr = logg.Writer()
-
-	if err := cmd.Run(); err != nil {
+	if err := git.run("config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"); err != nil {
 		logg.Printf("Failed to configure repo (replace fetch): %s, %v", path, err)
 		return false
 	}
 
-	ctx, cancel = context.WithTimeout(context.Background(), h.gitTimeout)
-	defer cancel()
-	cmd = exec.CommandContext(ctx, "git", "config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*")
-	cmd.Dir = path
-	cmd.Stdout = logg.Writer()
-	cmd.Stderr = logg.Writer()
-
-	if err := cmd.Run(); err != nil {
+	if err := git.run("config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*"); err != nil {
 		logg.Printf("Failed to configure repo (add fetch): %s, %v", path, err)
 		return false
 	}
@@ -215,14 +191,9 @@ func (h *handler) configureNewRepo(path string, logg *log.Logger) bool {
 }
 
 func (h *handler) updateServerInfo(path string, logg *log.Logger) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "update-server-info")
-	cmd.Dir = path
-	cmd.Stdout = logg.Writer()
-	cmd.Stderr = logg.Writer()
+	git := gitRunner{path, h.gitTimeout, logg.Writer()}
 
-	if err := cmd.Run(); err != nil {
+	if err := git.run("update-server-info"); err != nil {
 		logg.Printf("Failed to run update-server-info: %s, %v", path, err)
 		return false
 	}
@@ -339,17 +310,17 @@ func readAccess(path string, logg *log.Logger) time.Time {
 }
 
 func (h *handler) pinRepo(repo string, logg *log.Logger) bool {
+	if selfHosted(repo) {
+		logg.Printf("Cannot pin %s: repo is self-hosted", repo)
+		return false
+	}
+
 	path := filepath.Clean(h.root + "/" + repo)
 
-	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "config", "lorebox.pinned", "true")
-	cmd.Stderr = logg.Writer()
-	cmd.Stdout = logg.Writer()
-	cmd.Dir = path
+	git := gitRunner{path, h.gitTimeout, logg.Writer()}
 
-	if err := cmd.Run(); err != nil {
-		logg.Printf("Failed to pin '%s': %v", repo, err)
+	if err := git.run("config", "lorebox.pinned", "true"); err != nil {
+		logg.Printf("Failed to pin %s: %v", repo, err)
 		return false
 	}
 
@@ -357,16 +328,16 @@ func (h *handler) pinRepo(repo string, logg *log.Logger) bool {
 }
 
 func (h *handler) unpinRepo(repo string, logg *log.Logger) bool {
+	if selfHosted(repo) {
+		logg.Printf("Cannot unpin %s: repo is self-hosted", repo)
+		return false
+	}
+
 	path := filepath.Clean(h.root + "/" + repo)
 
-	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "config", "--unset", "lorebox.pinned")
-	cmd.Stderr = logg.Writer()
-	cmd.Stdout = logg.Writer()
-	cmd.Dir = path
+	git := gitRunner{path, h.gitTimeout, logg.Writer()}
 
-	if err := cmd.Run(); err != nil {
+	if err := git.run("config", "--unset", "lorebox.pinned"); err != nil {
 		logg.Printf("Failed to pin '%s': %v", repo, err)
 		return false
 	}
@@ -375,18 +346,17 @@ func (h *handler) unpinRepo(repo string, logg *log.Logger) bool {
 }
 
 func (h *handler) repoPinned(repo string, logg *log.Logger) bool {
+	if selfHosted(repo) {
+		logg.Printf("Pinned/unpinned status is not applicable to self-hosted repo %s", repo)
+		return false
+	}
+
 	path := filepath.Clean(h.root + "/" + repo)
 
-	ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "config", "--bool", "lorebox.pinned")
-	cmd.Dir = path
+	git := gitRunner{path, h.gitTimeout, logg.Writer()}
 
-	err := cmd.Run()
-
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+	if err := git.run("config", "--bool", "lorebox.pinned"); err != nil {
+		if _, yes := errors.AsType[*exec.ExitError](err); yes {
 			return false
 		}
 
@@ -405,7 +375,7 @@ func recordAccess(path string, logg *log.Logger) {
 	if _, err := os.Stat(accPath); err != nil {
 		f, err := os.OpenFile(accPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
 		if err != nil {
-			log.Printf("Could not create %s", accPath)
+			logg.Printf("Could not create %s", accPath)
 			return
 		}
 		f.Close()
@@ -415,7 +385,7 @@ func recordAccess(path string, logg *log.Logger) {
 	err := os.Chtimes(accPath, now, now)
 
 	if err != nil {
-		log.Printf("Could not update mtime on %s", accPath)
+		logg.Printf("Could not update mtime on %s", accPath)
 		return
 	}
 }
@@ -446,16 +416,11 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger, scheme string) bool {
 		}
 
 		url := scheme + ":/" + repo
-
-		// TODO: timeouts
+		
+		git := gitRunner{h.root, h.gitTimeout, logg.Writer()}
 
 		// First just ls...
-		ctx, cancel := context.WithTimeout(context.Background(), h.gitTimeout)
-		defer cancel()
-
-		cmd := exec.CommandContext(ctx, "git", "ls-remote", "--exit-code", url)
-
-		if err := cmd.Run(); err != nil {
+		if err := git.run("ls-remote", "--exit-code", url); err != nil {
 			logg.Printf("Failed to ls-remote '%s': %v", url, err)
 			return false, nil
 		}
@@ -470,14 +435,9 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger, scheme string) bool {
 			tempPath = path
 		}
 
-		ctx, cancel = context.WithTimeout(context.Background(), h.gitCloneTimeout)
-		defer cancel()
-		cmd = exec.CommandContext(ctx, "git", "clone", "--mirror", url, tempPath)
-		cmd.Dir = h.root
-		cmd.Stdout = logg.Writer()
-		cmd.Stderr = logg.Writer()
+		git.timeout = h.gitCloneTimeout
 
-		if err := cmd.Run(); err != nil {
+		if err := git.run("clone", "--mirror", url, tempPath); err != nil {
 			logg.Printf("Failed to mirror clone '%s': %v", url, err)
 			return false, nil
 		}
@@ -508,7 +468,7 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger, scheme string) bool {
 
 		recordAccess(path, logg)
 
-		ctx, cancel = context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
 
 		h.reposLock.Lock()
 		h.repos[path] = repoDescription {
@@ -526,7 +486,7 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger, scheme string) bool {
 	return success.(bool)
 }
 
-func (h *handler) validateCredentials(id, token string, admin bool) bool {
+func (h *handler) validateCredentials(id, token string, requiredAuthLevel int) (int, bool) {
 	log.Printf("Validating '%s'", id)
 
 	hash := sha256.Sum256([]byte(token))
@@ -536,33 +496,149 @@ func (h *handler) validateCredentials(id, token string, admin bool) bool {
 
 	if !ok {
 		log.Printf("Unknown token id '%s'", id)
-		return false
+		return authLevelNone, false
 	}
 
 	if enHash != servToken.hash {
 		log.Printf("Hash doesn't match: '%s'", id)
-		return false
+		return authLevelNone, false
 	}
 
-	if admin && servToken.level != "admin" {
-		log.Printf("Doesn't have admin permissions: '%s'", id)
-		return false
+	if servToken.level < requiredAuthLevel {
+		log.Printf("%s doesn't have enough permissions. %d < %d", id, servToken.level, requiredAuthLevel)
+		return authLevelNone, false
 	}
 
-	log.Printf("%s validated", id)
-	return true
+	return servToken.level, true
 }
 
+const (
+	authLevelNone int = iota
+	authLevelFetch
+	authLevelPush
+	authLevelAdmin
+)
 
-func (h *handler) requireAuth(w http.ResponseWriter, req *http.Request, admin bool) bool {
-	if h.auth != "none" {
-		id, token, ok := req.BasicAuth()
-		if !ok || !h.validateCredentials(id, token, admin) {
-			h.serve401(w)
-			return false
-		}
+func stringToAuthLevel(s string) int {
+	switch s {
+	case "admin":
+		return authLevelAdmin
+	case "push":
+		return authLevelPush
+	case "fetch":
+		return authLevelFetch
+	default:
+		return authLevelNone
 	}
-	return true
+}
+
+func (h *handler) requireAuth(w http.ResponseWriter, req *http.Request, authLevel int) (string, int, bool) {
+	if h.auth == "none" {
+		return "", authLevelNone, true
+	}
+
+	id, token, ok := req.BasicAuth()
+	if !ok {
+		h.serve401(w)
+		return id, authLevelNone, false
+	}
+
+	level, ok := h.validateCredentials(id, token, authLevel) 
+	if !ok {
+		h.serve401(w)
+		return id, authLevelNone, false
+	}
+
+	return id, level, true
+}
+
+func (h *handler) handlePush(w http.ResponseWriter, req *http.Request) {
+	if !selfHosted(req.URL.Path) {
+		h.serve400(w)
+		return
+	}
+
+	owner, repoName := parseSelfHosted(req.URL.Path)
+
+	// Auth required, obviously
+	who, level, ok := h.requireAuth(w, req, authLevelPush)
+	if !ok {
+		log.Printf("Invalid auth: %s", who)
+		h.serve400(w)
+		return
+	}
+
+	// You can only push to your own repo, unless you are an admin
+	if who != owner && level != authLevelAdmin {
+		log.Printf("%s tried to push into repo they don't own: %s/%s", who, owner, repoName)
+		h.serve400(w)
+		return
+	}
+
+	repo := chopPostfix(req.URL.Path, "/git-receive-pack")
+
+	// Exists
+	if _, err := os.Stat(h.root + repo); err == nil {
+		h.git.ServeHTTP(w, req)
+		return
+	}
+
+	// Doesn't exist, so create
+	if err := h.gitInit(h.root + repo); err != nil {
+		log.Printf("Couldn't init %s: %v", repo, err)
+		h.serve500(w)
+		return
+	}
+}
+
+func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc string) {
+	repo := chopInfoRefs(filepath.Clean("/" + req.URL.Path))
+
+	miss := false
+	// Doesn't exist, so pull
+	if _, err := os.Stat(h.root + repo); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			fmt.Printf("Can't stat '%s': %v", repo, err)
+			h.serve500(w)
+			return
+		}
+
+		// Authenticate
+		if _, _, ok := h.requireAuth(w, req, authLevelFetch); !ok {
+			return
+		}
+
+		log.Printf("Running pullthrough on '%s'", repo)
+		
+		if !h.fetchRepo(repo, log.Default(), "https") {
+			h.serve404(w)
+			return
+		}
+		h.cacheMisses.Add(1)
+		miss = true
+	}
+
+	if !miss {
+		h.cacheHits.Add(1)
+	}
+
+	// Statistics
+	h.reposLock.Lock()
+	path := h.root + repo
+	r := h.repos[path]
+	r.requests++
+	h.repos[path] = r
+	h.reposLock.Unlock()
+
+	// Smart client
+	if svc == "git-upload-pack" {
+		h.git.ServeHTTP(w, req)
+
+	// Dumb client
+	} else {
+		h.serveFS(w, req)
+	}
+
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -579,9 +655,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// Auth
 	if h.auth == "all" {
-		id, token, ok := req.BasicAuth()
-		if !ok || !h.validateCredentials(id, token, false) {
-			h.serve401(w)
+		if _, _, ok := h.requireAuth(w, req, authLevelFetch); !ok {
+			log.Printf("Invalid auth")
 			return
 		}
 	}
@@ -594,7 +669,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// Admin remote control panel API
 	if req.Method == "GET" && strings.HasPrefix(req.URL.Path, "/-/") {
-		if !h.requireAuth(w, req, true) {
+		if _, _, ok := h.requireAuth(w, req, authLevelAdmin); !ok {
 			log.Printf("Invalid auth")
 			return
 		}
@@ -612,40 +687,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Request for ../info/refs, a start of the git repo transmission. Either
 	// pull (if not available) or just serve
 	if req.Method == "GET" && hasPostfix(req.URL.Path, infoRefs) {
-		repo := chopInfoRefs(filepath.Clean("/" + req.URL.Path))
-
-		// Doesn't exist, so pull
-		if _, err := os.Stat(h.root + repo); err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				fmt.Printf("Can't stat '%s': %v", repo, err)
-				h.serve500(w)
-				return
-			}
-
-			// Authenticate
-			if !h.requireAuth(w, req, false) {
-				return
-			}
-
-			log.Printf("Running pullthrough on '%s'", repo)
-			
-			if !h.fetchRepo(repo, log.Default(), "https") {
-				h.serve404(w)
-				return
-			}
-			h.cacheMisses.Add(1)
-		}
-
-		h.cacheHits.Add(1)
-		// Smart client
-		if svc == "git-upload-pack" {
-			h.git.ServeHTTP(w, req)
-
-		// Dumb client
-		} else {
-			h.serveFS(w, req)
-		}
-
+		h.handlePull(w, req, svc)
 		return
 	}
 	
@@ -655,8 +697,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Push and anything else
-	if svc != "" || hasPostfix(req.URL.Path, "/git-receive-pack") {
+	// Push. Only allowed for self-hosted repos
+	if req.Method == "POST" && hasPostfix(req.URL.Path, "/git-receive-pack") {
+		h.handlePush(w, req)
+		return
+	}
+
+	// Unknown service. Maybe remove this check?
+	if svc != "" {
 		h.serve400(w)
 		return
 	}
@@ -716,7 +764,7 @@ func (h *handler) walkRepos() {
 				}
 
 				return map[string]repoDescription {
-					dir: repoDescription {
+					dir: {
 						repo: h.chopRoot(dir),
 						size: size,
 					},
@@ -728,9 +776,7 @@ func (h *handler) walkRepos() {
 		repos = map[string]repoDescription{}
 		for _, e := range entries {
 			found := walk(dir + "/" + e.Name(), depth + 1)
-			for r, v := range found {
-				repos[r] = v
-			}
+			maps.Copy(repos, found)
 		}
 
 		return
@@ -738,6 +784,14 @@ func (h *handler) walkRepos() {
 
 	// No lock, nothing runs at this point yet
 	h.repos = walk(h.root, 0)
+
+	// Mark self-hosted repos as such
+	for p, d := range h.repos {
+		if selfHosted(d.repo) {
+			d.selfHosted = true
+			h.repos[p] = d
+		}
+	}
 
 	log.Printf("Done walking repos")
 }
@@ -946,10 +1000,12 @@ func registerWithGit() {
 		return
 	}
 
-	for host, _ := range config.Tokens {
+	git := gitRunner{".", time.Second * 5, os.Stdout}
+
+	for host := range config.Tokens {
 		fmt.Printf("Registering auth for %s...\n", host)
 
-		err = exec.Command("git", "config", "--global", "credential.http://" + host + ".helper", "!" + lorebox + " credential").Run()
+		err = git.run("config", "--global", "credential.http://" + host + ".helper", "!" + lorebox + " credential")
 
 		if err != nil {
 			fmt.Println(err)
@@ -957,7 +1013,7 @@ func registerWithGit() {
 
 		fmt.Printf("    http success\n")
 
-		err = exec.Command("git", "config", "--global", "credential.https://" + host + ".helper", "!" + lorebox + " credential").Run()
+		err = git.run("config", "--global", "credential.https://" + host + ".helper", "!" + lorebox + " credential")
 
 		if err != nil {
 			fmt.Println(err)
@@ -982,7 +1038,7 @@ func credentialHelper() {
 
 	sc := bufio.NewScanner(os.Stdin)
 
-	for sc.Scan() {
+	for sc.Scan() && sc.Err() == nil {
 		line := sc.Text()
 		if line == "" {
 			break
@@ -1011,8 +1067,6 @@ func credentialHelper() {
 
 		fmt.Printf("username=%s\npassword=%s\n\n", id, secret)
 	}
-
-	return
 }
 
 func main() {
@@ -1022,7 +1076,6 @@ func main() {
 		usage()
 		return
 	}
-
 
 	switch os.Args[1] {
 	case "gen-token":
@@ -1112,15 +1165,15 @@ func main() {
 	switch config.Disk.Policy {
 	case "lru", "deny", "warn":
 	default:
-		log.Fatal("disk:policy: must be either 'lru', 'deny', or 'warn'")
+		log.Fatal("disk:policy must be either 'lru', 'deny', or 'warn'")
 	}
 
 	maxDiskUsage := parseDiskSize(config.Disk.Max)
 	if maxDiskUsage == 0 {
-		log.Fatal("disk:max: may not be zero")
+		log.Fatal("disk:max may not be zero")
 	}
 	if maxDiskUsage <= 32 * 1024 {
-		log.Printf("Warning: disk:max set to less than 32K, that might be way too little")
+		log.Printf("Warning: disk:max set to less than 32K, that might be too little")
 	}
 
 	root, err = expandPath(config.Root)
@@ -1140,12 +1193,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	sID := fullSelfID()
-	html400 = []byte(strings.Replace(string(html400), "__LOREBOX_VERSION", sID, -1))
-	html401 = []byte(strings.Replace(string(html401), "__LOREBOX_VERSION", sID, -1))
-	html404 = []byte(strings.Replace(string(html404), "__LOREBOX_VERSION", sID, -1))
-	html500 = []byte(strings.Replace(string(html500), "__LOREBOX_VERSION", sID, -1))
-
+	html400 = processStaticPage(html400, cssStyle)
+	html401 = processStaticPage(html400, cssStyle)
+	html404 = processStaticPage(html400, cssStyle)
+	html500 = processStaticPage(html400, cssStyle)
+	
 	ctx, cancel := context.WithTimeout(context.Background(), config.Timeouts.Git.Regular.D())
 	defer cancel()
 	gitdir, err := exec.CommandContext(ctx, "git", "--exec-path").Output()
@@ -1184,26 +1236,33 @@ func main() {
 
 	for _, t := range config.Tokens {
 		if t.Id == "" || t.Hash == "" {
-			log.Fatalf("For each token, id:, hash:, and level: must be set")
+			log.Fatalf("For each token, id and hash must be set")
 		}
 
 		if t.Level == "" {
 			t.Level = "fetch"
 		}
 
-		if t.Level != "admin" && t.Level != "fetch" {
-			log.Fatalf("For each token, level: must be set to either 'fetch' or 'admin'")
+		level := stringToAuthLevel(t.Level)
+		// Invalid level
+		if level == authLevelNone {
+			log.Fatalf("For each token, level must be set to either 'fetch', 'push', or 'admin'")
 		}
 
 		h.tokens[t.Id] = tokenInfo {
-			t.Hash, t.Level,
+			t.Hash, level,
 		}
 	}
 
 	// Populates h.repos
 	h.walkRepos()
 
-	for r := range h.repos {
+	for r, d := range h.repos {
+		// Can't refresh self-hosted repos
+		if d.selfHosted {
+			continue
+		}
+
 		ctx, cancel := context.WithCancel(context.Background())
 		info := h.repos[r]
 		info.cancelRefresher = cancel

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"runtime/debug"
 	"sync"
+	"regexp"
 )
 
 func hasPostfix(str, postfix string) bool {
@@ -25,11 +26,49 @@ func chopInfoRefs(path string) string {
 	return path
 }
 
+func chopPostfix(str, postfix string) string {
+	if hasPostfix(str, postfix) {
+		str = str[:len(str)-len(postfix)]
+	}
+	return str
+}
+
 func (h *handler) chopRoot(path string) string {
 	if strings.HasPrefix(path, filepath.Clean(h.root) + "/") {
 		path = path[len(h.root):]
 	}
 	return path
+}
+
+func selfHosted(repo string) bool {
+	return strings.HasPrefix(repo, "/~/")
+}
+
+var pSHRegexpOnce sync.Once
+var pSHRegexp *regexp.Regexp
+func parseSelfHosted(repo string) (owner, name string) {
+
+	pSHRegexpOnce.Do(func() {
+		var err error
+		pSHRegexp, err = regexp.Compile(`^\/~\/([^\/]*)\/([^\/]*)\/?(.*)$`)
+		if err != nil {
+			log.Fatal(err)
+		}
+	})
+
+	matches := pSHRegexp.FindStringSubmatch(repo)	
+
+	if matches == nil {
+		return
+	}
+
+	// Something went wrong
+	if len(matches) != 4 {
+		return
+	}
+
+	// match[0] is the entire string; match[3] is the path within the repo
+	return matches[1], matches[2]
 }
 
 // Why global var? fullSelfID() should be accessible from any part of the
@@ -107,3 +146,8 @@ func parseDiskSize(size string) int64 {
 	return int64(bytes)
 }
 
+func processStaticPage(page []byte, style string) []byte {
+	spage := strings.ReplaceAll(string(html400), "__LOREBOX_VERSION", fullSelfID())
+	spage = strings.ReplaceAll(spage, "__STYLE", style)
+	return []byte(spage)
+}

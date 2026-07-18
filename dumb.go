@@ -30,41 +30,58 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 	bw := bufio.NewWriter(w)
 
 	bw.Write(htmlGenericBegin)
-	bw.WriteString(fmt.Sprintf(
+	fmt.Fprintf(bw,
 		`
 		 <style>
+		 %s
 		 th, td, tr, table {
 			 text-align: left;
 		 }
+		 table {
+			 border-spacing: 0 2px;
+			 width: 100%%;
+			 padding: 0 3%% 0 3%%;
+		 }
+		 tbody tr:nth-child(even) {
+			 background-color: #1a1a1a;
+		 }
+		 tbody tr:nth-child(odd) {
+			 background-color: #000000;
+		 }
+		 tbody tr:hover {
+		 	background-color: #262626;
+		 }
 		 </style>
-		 <h2>Index of %s</h2><hr>
-		 <a href="/">Root</a>
-		 <a href="%s">Back</a>`,
-		path,
+		 <h1>(<a href="%s">back</a>) <a href="/">index</a>: %s</h1>
+		 <hr>
+		 <table>
+		 <thead>
+		 <tr>
+		 	<th>Name</th>
+		 	<th>Size</th>
+		 	<th>Is directory</th>
+		 	<th>Last modified</th>
+		 </tr>
+		 </thead><tbody>
+		 `,
+		cssStyle,
 		filepath.Dir(path),
-	))
-	bw.WriteString(`
-	<table>
-	<tr>
-		<th>Size</th>
-		<th>Is directory</th>
-		<th>Last modified</th>
-		<th>Name</th>
-	</tr>`)
+		path,
+	)
 
 	// Inject /repos.txt
 	if path == "/" {
-		bw.WriteString(fmt.Sprintf(
+		fmt.Fprintf(bw,
 				`<tr>
-					<td>**********</td>
-					<td>No</td>
-					<td>%s</td>
 					<td><a href="%s">%s</a></td>
+					<td></td>
+					<td><span class="no">No</span></td>
+					<td><span class="meta">%s</span></td>
 				</tr>`,
-				time.Now().Format("2006-01-02 15:04:05"),
 				"/repos.txt",
 				"repos.txt",
-		))
+				time.Now().Format("2006-01-02 15:04:05"),
+		)
 	}
 
 	for _, e := range entries {
@@ -72,10 +89,10 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 			continue
 		}
 
-		dir := "No"
+		dir := `<span class="no">No</span>`
 
 		if e.IsDir() {
-			dir = "Yes"
+			dir = `<span class="yes">Yes</span>`
 		}
 
 		size, modtime := "", ""
@@ -90,22 +107,22 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 			}
 		}
 
-		bw.WriteString(fmt.Sprintf(
+		fmt.Fprintf(bw,
 				`<tr>
-					<td>%s</td>
-					<td>%s</td>
-					<td>%s</td>
 					<td><a href="%s">%s</a></td>
+					<td><span class="meta">%s</span></td>
+					<td>%s</td>
+					<td><span class="meta">%s</span></td>
 				</tr>`,
+				filepath.Clean(path + "/" + e.Name()),
+				html.EscapeString(name),
 				size,
 				dir,
 				modtime,
-				filepath.Clean(path + "/" + e.Name()),
-				html.EscapeString(name),
-		))
+		)
 	}
 
-	bw.WriteString("</table><hr> " + fullSelfID())
+	fmt.Fprintf(bw, "</tbody></table><hr> %s", fullSelfID())
 	bw.Write(htmlGenericEnd)
 	bw.Flush()
 }
@@ -114,7 +131,7 @@ func (h *handler) intraRepoPath(path string) (string, bool) {
 	h.reposLock.RLock()
 	defer h.reposLock.RUnlock()
 
-	for p, _ := range h.repos {
+	for p := range h.repos {
 		p = filepath.Clean(p) + "/"
 		if strings.HasPrefix(path, p) {
 			return "/" + path[len(p):], true

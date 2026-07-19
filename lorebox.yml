@@ -50,10 +50,13 @@ disk:
 
 # Authentication tokens
 # Create with lorebox -gen-token
-# id: and hash: must be set for each entry. Default level: is assumed to be
-# "fetch". level: may be either "admin" or "fetch"
-# "fetch" users may trigger a remote repository fetch, while "admin" users can
-# also use api for remote control of the box
+# id and hash must be set for each entry. Default level is assumed to be
+# "fetch". level may be either "admin", "push", or "fetch"
+# * "fetch" users may trigger a remote repository fetch
+# * "push" users may trigger a remote repository fetch, create, delete, hide,
+#   unhide, push self-hosted repos in their directory (/~/<id>/<repo>)
+# * "admin" users can also use api for remote control of the box, control
+#   anyone's self-hosted repos
 tokens:
   - id: "admin"
     hash: "7Kkm-owmxvCmrKE4U6OzSEuPhhyIMzNtvYWkS8yfJjo"

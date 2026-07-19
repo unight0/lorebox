@@ -315,7 +315,7 @@ func (h *handler) apiSHCreate(w http.ResponseWriter, repo RepoPath) {
 	}
 
 	h.apiSimpleTr(w, func (logg *log.Logger) bool {
-		repo = "/~" + repo
+		repo = repo.selfHosted()
 
 		if _, err := os.Stat(repo.Path(h).S()); err == nil {
 			logg.Printf("Can't init %s: already exists", repo)
@@ -333,7 +333,7 @@ func (h *handler) apiSHDelete(w http.ResponseWriter, repo RepoPath) {
 	}
 
 	h.apiSimpleTr(w, func (logg *log.Logger) bool {
-		repo = "/~" + repo
+		repo = repo.selfHosted()
 		logg.Printf("Removing %s...", repo)
 
 		if _, err := os.Stat(repo.Path(h).S()); err != nil {
@@ -356,7 +356,7 @@ func (h *handler) apiSHHide(w http.ResponseWriter, repo RepoPath) {
 	// disabled, the users should still be able to hide/unhide their repos
 
 	h.apiSimpleTr(w, func (logg *log.Logger) bool {
-		repo = "/~" + repo
+		repo = repo.selfHosted()
 		return h.hideRepo(repo, logg)
 	})
 }
@@ -367,7 +367,7 @@ func (h *handler) apiSHUnhide(w http.ResponseWriter, repo RepoPath) {
 	// disabled, the users should still be able to hide/unhide their repos
 
 	h.apiSimpleTr(w, func (logg *log.Logger) bool {
-		repo = "/~" + repo
+		repo = repo.selfHosted()
 		return h.unhideRepo(repo, logg)
 	})
 }

@@ -61,8 +61,8 @@ type repoDescription struct {
 	cancelRefresher func()
 }
 
-func (h *handler) refreshDefaultBranch(path Path) bool {
-	git := gitRunner{path, h.gitTimeout, os.Stdout}
+func (h *handler) refreshDefaultBranch(path Path, logg *log.Logger) bool {
+	git := gitRunner{path, h.gitTimeout, logg.Writer()}
 
 	out, err := git.output("ls-remote", "--symref", "origin", "HEAD")
 	if err != nil {
@@ -117,7 +117,7 @@ func (h *handler) refreshRepo(path Path, logg *log.Logger) bool {
 	}
 
 	// Non-critical if fails
-	h.refreshDefaultBranch(path)
+	h.refreshDefaultBranch(path, logg)
 
 	git := gitRunner{path, h.gitCloneTimeout, logg.Writer()}
 
@@ -361,7 +361,7 @@ func (h *handler) fetchRepo(repo RepoPath, logg *log.Logger, scheme string) bool
 
 		path := repo.Path(h)
 
-		stempPath, err := os.MkdirTemp(h.root.S() + "/.tmp", "repo-fetch-*")
+		stempPath, err := os.MkdirTemp(h.tmpDir().S(), "repo-fetch-*")
 		defer os.RemoveAll(stempPath)
 
 		tempPath := Path(stempPath)
@@ -497,12 +497,14 @@ func (h *handler) updateRepoSize(repo RepoPath) {
 }
 
 func (h *handler) handlePush(w http.ResponseWriter, req *http.Request) {
-	if !selfHosted(RepoPath(req.URL.Path)) {
+	fullrpath := NewRepoPath(req.URL.Path)	
+
+	if !selfHosted(fullrpath) {
 		h.serve400(w)
 		return
 	}
 
-	owner, repoName := parseSelfHosted(RepoPath(req.URL.Path))
+	owner, repoName := parseSelfHosted(fullrpath)
 
 	// Auth required, obviously
 	who, level, ok := h.requireAuth(req, authLevelPush)
@@ -576,7 +578,7 @@ func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc strin
 
 		// For a self-hosted repo, we create it if we have the permissions
 		if h.allowPush && selfHosted(repo) && level >= authLevelPush {
-			owner, repoName := parseSelfHosted(RepoPath(req.URL.Path))
+			owner, repoName := parseSelfHosted(NewRepoPath(req.URL.Path))
 
 			// You can only push to your own repo, unless you are an admin
 			if who != owner && level != authLevelAdmin {
@@ -644,7 +646,7 @@ func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc strin
 }
 
 func (h *handler) requireSHAuth(req *http.Request) (string, string, bool) {
-	owner, repoName := parseSelfHosted(RepoPath(req.URL.Path))
+	owner, repoName := parseSelfHosted(NewRepoPath(req.URL.Path))
 
 	// Invalid syntax
 	if owner == "" || repoName == "" {
@@ -750,7 +752,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.Method == "GET" && hasPostfix(req.URL.Path, infoRefs) {
 
 		// Hidden repos can only be seen by their owner and admin
-		if h.hiddenRepoPath(RepoPath(req.URL.Path), log.Default()) {
+		if h.hiddenRepoPath(NewRepoPath(req.URL.Path), log.Default()) {
 			if who, repo, ok := h.requireSHAuth(req); !ok {
 				h.serve404(w)
 				log.Printf("%s tried to fetch a hidden repo they don't own: %s", who, repo)

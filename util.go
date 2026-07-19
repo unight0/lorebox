@@ -33,14 +33,6 @@ func chopPostfix(str, postfix string) string {
 }
 
 
-//
-//func (h *handler) chopRoot(path string) string {
-//	if strings.HasPrefix(path, filepath.Clean(h.root.S()) + "/") {
-//		path = path[len(h.root):]
-//	}
-//	return path
-//}
-
 func selfHosted(repo RepoPath) bool {
 	return strings.HasPrefix(repo.S(), "/~/")
 }

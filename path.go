@@ -18,10 +18,8 @@ func NewRepoPath(s string) RepoPath {
 	return RepoPath(filepath.Clean("/" + s))
 }
 
-// Identical to handler.chopRoot at the moment, but moved here to ensure
-// behaviour stays constant
 func (p Path) RepoPath(h *handler) RepoPath {
-	if strings.HasPrefix(p.S(), filepath.Clean(h.root.S()) + "/") {
+	if strings.HasPrefix(p.S(), h.root.S() + "/") {
 		return RepoPath(p[len(h.root):])
 	}
 	return RepoPath(p)
@@ -61,12 +59,18 @@ func (p Path) expand() (Path, error) {
 	resolved, err := filepath.EvalSymlinks(spath)
 
 	if err != nil {
-		return p, nil
+		return NewPath(spath), nil
 	}
 
-	return Path(resolved), nil
+	return NewPath(resolved), nil
 }
 
+func (p RepoPath) selfHosted() RepoPath {
+	if !strings.HasPrefix(p.S(), "/~/") {
+		return RepoPath("/~/").Concat(p.S())
+	}
+	return p
+}
 
 func (h *handler) tmpDir() Path {
 	return h.root.Concat("/.tmp")

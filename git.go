@@ -55,7 +55,7 @@ func (h *handler) gitInit(path Path, logg *log.Logger) bool {
 		return false
 	}
 
-	return h.updateServerInfo(path, log.Default())
+	return h.updateServerInfo(path, logg)
 }
 
 func (h *handler) updateServerInfo(path Path, logg *log.Logger) bool {

@@ -137,7 +137,7 @@ func (h *handler) intraRepoPath(path Path) (IRPath, bool) {
 	for p := range h.repos {
 		ps := p.S() + "/"
 		if strings.HasPrefix(path.S(), ps) {
-			return IRPath("/" + path.S()[len(p):]), true
+			return IRPath(path.S()[len(p):]), true
 		}
 	}
 
@@ -170,7 +170,7 @@ func (h *handler) cacheablePath(path Path) bool {
 func (h *handler) excludedPath(path Path) bool {
 
 	// /.tmp dir should not be accessible
-	if strings.HasPrefix(path.S(), filepath.Clean(h.root.S() + "/.tmp" + "/")) {
+	if strings.HasPrefix(path.S(), h.tmpDir().S() + "/") {
 		return true
 	}
 
@@ -237,7 +237,7 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 	path, err := rpath.Path(h).expand()
 
 	if err != nil {
-		log.Printf("expandPath(): %v", err)
+		log.Printf("rpath.Path(h).expand(): %v", err)
 		h.serve500(w)
 		return
 	}

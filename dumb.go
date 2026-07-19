@@ -14,8 +14,8 @@ import (
 	"path/filepath"
 )
 
-func (h *handler) serveDir(w http.ResponseWriter, path string) {
-	entries, err := os.ReadDir(h.root + path)
+func (h *handler) serveDir(w http.ResponseWriter, rpath RepoPath) {
+	entries, err := os.ReadDir(rpath.Path(h).S())
 
 	if err != nil {
 		log.Printf("error at os.ReadDir(): %v", err)
@@ -65,12 +65,12 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 		 </thead><tbody>
 		 `,
 		cssStyle,
-		filepath.Dir(path),
-		path,
+		filepath.Dir(rpath.S()),
+		rpath.S(),
 	)
 
 	// Inject /repos.txt
-	if path == "/" {
+	if rpath.S() == "/" {
 		fmt.Fprintf(bw,
 				`<tr>
 					<td><a href="%s">%s</a></td>
@@ -85,10 +85,10 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 	}
 
 	for _, e := range entries {
-		if h.excludedPath(filepath.Clean(h.root + "/" + path + "/" + e.Name())) {
+		if h.excludedPath(rpath.Path(h).Concat(e.Name())) {
 			continue
 		}
-		if h.hiddenRepoPath(path + "/" + e.Name(), log.Default()) {
+		if h.hiddenRepoPath(rpath.Concat(e.Name()), log.Default()) {
 			continue
 		}
 
@@ -117,7 +117,7 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 					<td>%s</td>
 					<td><span class="meta">%s</span></td>
 				</tr>`,
-				filepath.Clean(path + "/" + e.Name()),
+				rpath.Concat(e.Name()),
 				html.EscapeString(name),
 				size,
 				dir,
@@ -130,72 +130,77 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 	bw.Flush()
 }
 
-func (h *handler) intraRepoPath(path string) (string, bool) {
+func (h *handler) intraRepoPath(path Path) (IRPath, bool) {
 	h.reposLock.RLock()
 	defer h.reposLock.RUnlock()
 
 	for p := range h.repos {
-		p = filepath.Clean(p) + "/"
-		if strings.HasPrefix(path, p) {
-			return "/" + path[len(p):], true
+		ps := p.S() + "/"
+		if strings.HasPrefix(path.S(), ps) {
+			return IRPath("/" + path.S()[len(p):]), true
 		}
 	}
 
-	return path, false
+	return IRPath(path.S()), false
 }
 
-func (h *handler) cacheablePath(path string) bool {
+func (h *handler) cacheablePath(path Path) bool {
 
-	path, ok := h.intraRepoPath(path)
+	ipath, ok := h.intraRepoPath(path)
 
 	if !ok {
 		return false
 	}
 
-	if hasPostfix(path, "/HEAD") ||
-		hasPostfix(path, "/info/refs") ||
-		strings.Contains(path, "/objects/info/") {
+	sipath := ipath.S()
+
+	if hasPostfix(sipath, "/HEAD") ||
+		hasPostfix(sipath, "/info/refs") ||
+		strings.Contains(sipath, "/objects/info/") {
 		return false
 	}
 
-	if strings.Contains(path, "/objects/") {
+	if strings.Contains(sipath, "/objects/") {
 		return true
 	}
 
 	return false
 }
 
-func (h *handler) excludedPath(path string) bool {
+func (h *handler) excludedPath(path Path) bool {
 
 	// /.tmp dir should not be accessible
-	if strings.HasPrefix(path, filepath.Clean(h.root + "/.tmp")) {
+	if strings.HasPrefix(path.S(), filepath.Clean(h.root.S() + "/.tmp" + "/")) {
 		return true
 	}
 
-	path, ok := h.intraRepoPath(path)
+	ipath, ok := h.intraRepoPath(path)
 
 	if !ok {
 		return false
 	}
 
-	return hasPostfix(path, "/lorebox.access") ||
-		hasPostfix(path, "/config") ||
-		hasPostfix(path, "/description") ||
-		strings.Contains(path, "/hooks/") ||
-		hasPostfix(path, "/hooks") ||
-		hasPostfix(path, "/FETCH_HEAD")
+	sipath := ipath.S()
+
+	return hasPostfix(sipath, "/lorebox.access") ||
+		hasPostfix(sipath, "/config") ||
+		hasPostfix(sipath, "/description") ||
+		strings.Contains(sipath, "/hooks/") ||
+		hasPostfix(sipath, "/hooks") ||
+		hasPostfix(sipath, "/FETCH_HEAD")
 }
 
-func (h *handler) serveFile(w http.ResponseWriter, path string) {
+func (h *handler) serveFile(w http.ResponseWriter, rpath RepoPath) {
 
-	abspath := filepath.Clean(h.root + path)
+	//abspath := filepath.Clean(h.root + path)
+	abspath := rpath.Path(h)
 
-	if hasPostfix(abspath, infoRefs) {
-		dirpath := chopInfoRefs(abspath)
-		recordAccess(dirpath, log.Default())
+	if hasPostfix(abspath.S(), infoRefs) {
+		dirpath := chopInfoRefs(abspath.S())
+		recordAccess(Path(dirpath), log.Default())
 	}
 
-	file, err := os.Open(abspath)
+	file, err := os.Open(abspath.S())
 
 	if err != nil {
 		log.Printf("error at os.Open(): %v", err)
@@ -211,7 +216,7 @@ func (h *handler) serveFile(w http.ResponseWriter, path string) {
 	defer file.Close()
 
 	w.Header().Set("Cache-Control", "max-age=60, no-transform")
-	if h.cacheablePath(path) {
+	if h.cacheablePath(abspath) {
 		w.Header().Set("Cache-Control", "max-age=31536000, immutable, no-transform")
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -228,8 +233,8 @@ func (h *handler) serveFile(w http.ResponseWriter, path string) {
 
 func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 
-	relpath := filepath.Clean("/" + req.URL.Path)
-	path, err := expandPath(h.root + relpath)
+	rpath := NewRepoPath(req.URL.Path)
+	path, err := rpath.Path(h).expand()
 
 	if err != nil {
 		log.Printf("expandPath(): %v", err)
@@ -238,25 +243,25 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if h.excludedPath(path) {
-		log.Printf("Excluded repo path access: %s\n", relpath)
+		log.Printf("Excluded repo path access: %s\n", rpath)
 		h.serve404(w)
 		return
 	}
 
-	if h.hiddenRepoPath(relpath, log.Default()) {
-		log.Printf("Hidden repo path access: %s\n", relpath)
+	if h.hiddenRepoPath(rpath, log.Default()) {
+		log.Printf("Hidden repo path access: %s\n", rpath)
 		h.serve404(w)
 		return
 	}
 
 	// Outside of the root directory
-	if !strings.HasPrefix(path + "/", filepath.Clean(h.root) + "/") {
+	if !strings.HasPrefix(path.S() + "/", h.root.S() + "/") {
 		log.Printf("External path '%s' was requested", path)
 		h.serve400(w)
 		return
 	}
 
-	info, err := os.Stat(path)
+	info, err := os.Stat(path.S())
 
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -265,15 +270,15 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		log.Printf("'%s' doesn't exist", relpath)
+		log.Printf("'%s' doesn't exist", rpath)
 		h.serve404(w)
 		return
 	}
 
 	if info.IsDir() {
-		h.serveDir(w, relpath)
+		h.serveDir(w, rpath)
 		return
 	}
 
-	h.serveFile(w, relpath)
+	h.serveFile(w, rpath)
 }

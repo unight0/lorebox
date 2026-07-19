@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"path/filepath"
 	"time"
 	"bytes"
 	"os"
@@ -29,7 +28,7 @@ func (h *handler) apiList(w http.ResponseWriter) {
 
 	for p, d := range h.repos {
 		repo := jsonableRepo {
-			Name: d.repo,
+			Name: d.repo.S(),
 			LastError: d.lastErr,
 			Pinned: h.repoPinned(d.repo, log.Default()),
 			Size: d.size,
@@ -38,7 +37,7 @@ func (h *handler) apiList(w http.ResponseWriter) {
 			Hidden: h.repoHidden(d.repo, log.Default()),
 		}
 
-		repos.Repos[p] = repo
+		repos.Repos[p.S()] = repo
 		repos.TotalSize += d.size
 	}
 
@@ -123,13 +122,13 @@ func (h *handler) apiEffectiveConfig(w http.ResponseWriter) {
 	w.Write(marsh)
 }
 
-func (h *handler) apiFetch(w http.ResponseWriter, repo string) {
+func (h *handler) apiFetch(w http.ResponseWriter, repo RepoPath) {
 	h.apiSimpleTr(w, func (logg *log.Logger) bool {
 		return h.fetchRepo(repo, logg, "https")
 	})
 }
 
-func (h *handler) apiFetchHttp(w http.ResponseWriter, repo string) {
+func (h *handler) apiFetchHttp(w http.ResponseWriter, repo RepoPath) {
 	h.apiSimpleTr(w, func (logg *log.Logger) bool {
 		return h.fetchRepo(repo, logg, "http")
 	})
@@ -158,27 +157,27 @@ func (h *handler) apiSimpleTr(w http.ResponseWriter, f func(*log.Logger) bool) {
 	w.Write(marsh)
 }
 
-func (h *handler) apiPin(w http.ResponseWriter, repo string) {
+func (h *handler) apiPin(w http.ResponseWriter, repo RepoPath) {
 	h.apiSimpleTr(w, func(logg *log.Logger) bool {
 		return h.pinRepo(repo, logg)
 	})
 }
 
-func (h *handler) apiUnpin(w http.ResponseWriter, repo string) {
+func (h *handler) apiUnpin(w http.ResponseWriter, repo RepoPath) {
 	h.apiSimpleTr(w, func(logg *log.Logger) bool {
 		return h.unpinRepo(repo, logg)
 	})
 }
 
-func (h *handler) apiRefresh(w http.ResponseWriter, repo string) {
-	path := filepath.Clean(h.root + "/" + repo)
+func (h *handler) apiRefresh(w http.ResponseWriter, repo RepoPath) {
+	path := repo.Path(h)
 
 	h.apiSimpleTr(w, func(logg *log.Logger) bool {
 		return h.refreshRepo(path, logg)
 	})
 }
 
-func (h *handler) apiEvict(w http.ResponseWriter, repo string) {
+func (h *handler) apiEvict(w http.ResponseWriter, repo RepoPath) {
 	h.apiSimpleTr(w, func(logg *log.Logger) bool {
 		return h.evictRepo(repo, logg)
 	})
@@ -195,7 +194,7 @@ func (h *handler) apiRefreshAll(w http.ResponseWriter) {
 			continue
 		}
 
-		repos.Repos[path] = jsonableRefresh{Name: d.repo, Status: "success"}
+		repos.Repos[path.S()] = jsonableRefresh{Name: d.repo.S(), Status: "success"}
 	}
 	h.reposLock.RUnlock()
 
@@ -206,7 +205,7 @@ func (h *handler) apiRefreshAll(w http.ResponseWriter) {
 	for p, r := range repos.Repos {
 		tr.Reset()
 		logg := log.New(tr, "", log.LstdFlags)
-		if !h.refreshRepo(p, logg) {
+		if !h.refreshRepo(Path(p), logg) {
 			r.Status = "Refresh failed"
 			fails++
 		}
@@ -253,32 +252,32 @@ func (h *handler) api(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if strings.HasPrefix(req.URL.Path, "/-/fetch/") {
-		h.apiFetch(w, req.URL.Path[len("/-/fetch"):])
+		h.apiFetch(w, NewRepoPath(req.URL.Path[len("/-/fetch"):]))
 		return
 	}
 
 	if strings.HasPrefix(req.URL.Path, "/-/fetch-http/") {
-		h.apiFetchHttp(w, req.URL.Path[len("/-/fetch-http"):])
+		h.apiFetchHttp(w, NewRepoPath(req.URL.Path[len("/-/fetch-http"):]))
 		return
 	}
 
 	if strings.HasPrefix(req.URL.Path, "/-/pin/") {
-		h.apiPin(w, req.URL.Path[len("/-/pin"):])
+		h.apiPin(w, NewRepoPath(req.URL.Path[len("/-/pin"):]))
 		return
 	}
 
 	if strings.HasPrefix(req.URL.Path, "/-/unpin/") {
-		h.apiUnpin(w, req.URL.Path[len("/-/unpin"):])
+		h.apiUnpin(w, NewRepoPath(req.URL.Path[len("/-/unpin"):]))
 		return
 	}
 
 	if strings.HasPrefix(req.URL.Path, "/-/refresh/") {
-		h.apiRefresh(w, req.URL.Path[len("/-/refresh"):])
+		h.apiRefresh(w, NewRepoPath(req.URL.Path[len("/-/refresh"):]))
 		return
 	}
 
 	if strings.HasPrefix(req.URL.Path, "/-/evict/") {
-		h.apiEvict(w, req.URL.Path[len("/-/evict"):])
+		h.apiEvict(w, NewRepoPath(req.URL.Path[len("/-/evict"):]))
 		return
 	}
 
@@ -309,7 +308,7 @@ func (h *handler) checkAllowPush(w http.ResponseWriter) bool {
 	return false
 }
 
-func (h *handler) apiSHCreate(w http.ResponseWriter, repo string) {
+func (h *handler) apiSHCreate(w http.ResponseWriter, repo RepoPath) {
 
 	if !h.checkAllowPush(w) {
 		return
@@ -318,16 +317,16 @@ func (h *handler) apiSHCreate(w http.ResponseWriter, repo string) {
 	h.apiSimpleTr(w, func (logg *log.Logger) bool {
 		repo = "/~" + repo
 
-		if _, err := os.Stat(h.root + repo); err == nil {
+		if _, err := os.Stat(repo.Path(h).S()); err == nil {
 			logg.Printf("Can't init %s: already exists", repo)
 			return false
 		}
 
-		return h.gitInit(h.root + repo, logg)
+		return h.gitInit(repo.Path(h), logg)
 	})
 }
 
-func (h *handler) apiSHDelete(w http.ResponseWriter, repo string) {
+func (h *handler) apiSHDelete(w http.ResponseWriter, repo RepoPath) {
 
 	if !h.checkAllowPush(w) {
 		return
@@ -337,12 +336,12 @@ func (h *handler) apiSHDelete(w http.ResponseWriter, repo string) {
 		repo = "/~" + repo
 		logg.Printf("Removing %s...", repo)
 
-		if _, err := os.Stat(h.root + repo); err != nil {
+		if _, err := os.Stat(repo.Path(h).S()); err != nil {
 			logg.Printf("Could not stat %s: %v", repo, err)
 			return false
 		}
 		
-		err := os.RemoveAll(h.root + repo)
+		err := os.RemoveAll(repo.Path(h).S())
 		if err != nil {
 			logg.Printf("Could not remote %s: %v", repo, err)
 			return false
@@ -351,7 +350,7 @@ func (h *handler) apiSHDelete(w http.ResponseWriter, repo string) {
 	})
 }
 
-func (h *handler) apiSHHide(w http.ResponseWriter, repo string) {
+func (h *handler) apiSHHide(w http.ResponseWriter, repo RepoPath) {
 
 	// Note that we don't call checkAllowPush() here, because even if pushes are
 	// disabled, the users should still be able to hide/unhide their repos
@@ -362,7 +361,7 @@ func (h *handler) apiSHHide(w http.ResponseWriter, repo string) {
 	})
 }
 
-func (h *handler) apiSHUnhide(w http.ResponseWriter, repo string) {
+func (h *handler) apiSHUnhide(w http.ResponseWriter, repo RepoPath) {
 
 	// Note that we don't call checkAllowPush() here, because even if pushes are
 	// disabled, the users should still be able to hide/unhide their repos
@@ -375,22 +374,22 @@ func (h *handler) apiSHUnhide(w http.ResponseWriter, repo string) {
 
 func (h *handler) apiSelfHosted(w http.ResponseWriter, req *http.Request) {
 	if strings.HasPrefix(req.URL.Path, "/+/create/") {
-		h.apiSHCreate(w, req.URL.Path[len("/+/create"):])
+		h.apiSHCreate(w, NewRepoPath(req.URL.Path[len("/+/create"):]))
 		return
 	}
 
 	if strings.HasPrefix(req.URL.Path, "/+/delete/") {
-		h.apiSHDelete(w, req.URL.Path[len("/+/delete"):])
+		h.apiSHDelete(w, NewRepoPath(req.URL.Path[len("/+/delete"):]))
 		return
 	}
 
 	if strings.HasPrefix(req.URL.Path, "/+/hide/") {
-		h.apiSHHide(w, req.URL.Path[len("/+/hide"):])
+		h.apiSHHide(w, NewRepoPath(req.URL.Path[len("/+/hide"):]))
 		return
 	}
 
 	if strings.HasPrefix(req.URL.Path, "/+/unhide/") {
-		h.apiSHUnhide(w, req.URL.Path[len("/+/unhide"):])
+		h.apiSHUnhide(w, NewRepoPath(req.URL.Path[len("/+/unhide"):]))
 		return
 	}
 

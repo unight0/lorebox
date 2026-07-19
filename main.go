@@ -31,12 +31,13 @@ import (
 )
 
 type handler struct {
-	root, auth string
+	root Path
+	auth string
 	gitTimeout, gitCloneTimeout, defaultRefresh, maxRefresh, minJitter, maxJitter time.Duration
 	git *cgi.Handler
 	fetchGroup sn.Group
 	tokens map[string]tokenInfo
-	repos map[string]repoDescription
+	repos map[Path]repoDescription
 	reposLock sync.RWMutex
 	startup time.Time
 	effectiveConfig *Config
@@ -53,14 +54,14 @@ type tokenInfo struct {
 }
 
 type repoDescription struct {
-	repo string
+	repo RepoPath
 	size, requests int64
 	selfHosted bool
 	lastErr time.Time
 	cancelRefresher func()
 }
 
-func (h *handler) refreshDefaultBranch(path string) bool {
+func (h *handler) refreshDefaultBranch(path Path) bool {
 	git := gitRunner{path, h.gitTimeout, os.Stdout}
 
 	out, err := git.output("ls-remote", "--symref", "origin", "HEAD")
@@ -96,22 +97,22 @@ func (h *handler) refreshDefaultBranch(path string) bool {
 	return true
 }
 
-func (h *handler) getRepos() map[string]repoDescription {
+func (h *handler) getRepos() map[Path]repoDescription {
 	h.reposLock.RLock()
 	defer h.reposLock.RUnlock()
 
-	repos := make(map[string]repoDescription)
+	repos := make(map[Path]repoDescription)
 
 	maps.Copy(repos, h.repos)
 
 	return repos
 }
 
-func (h *handler) refreshRepo(path string, logg *log.Logger) bool {
-	repo := h.chopRoot(path)
+func (h *handler) refreshRepo(path Path, logg *log.Logger) bool {
+	repo := path.RepoPath(h)
 
 	if selfHosted(repo) {
-		logg.Printf("Cannot refresh %s: repo is self-hosted", repo)
+		logg.Printf("Cannot refresh %s: repo is self-hosted", repo.S())
 		return false
 	}
 
@@ -130,9 +131,9 @@ func (h *handler) refreshRepo(path string, logg *log.Logger) bool {
 	return h.applyDiskUsagePolicy(logg) && updRes
 }
 
-func (h *handler) evictRepo(repo string, logg *log.Logger) bool {
+func (h *handler) evictRepo(repo RepoPath, logg *log.Logger) bool {
 
-	path := filepath.Clean(h.root + "/" + repo)
+	path := repo.Path(h)
 
 	h.reposLock.RLock()
 	if _, ok := h.repos[path]; !ok {
@@ -150,7 +151,7 @@ func (h *handler) evictRepo(repo string, logg *log.Logger) bool {
 	h.reposLock.Lock()
 	defer h.reposLock.Unlock()
 
-	if err := os.RemoveAll(path); err != nil {
+	if err := os.RemoveAll(path.S()); err != nil {
 		logg.Printf("Could not remove '%s'", path)
 		return false
 	}
@@ -166,7 +167,7 @@ func (h *handler) evictRepo(repo string, logg *log.Logger) bool {
 }
 
 // Config for the future, so git doesn't lose refs/lorebox/*
-func (h *handler) configureNewRepo(path string, logg *log.Logger) bool {
+func (h *handler) configureNewRepo(path Path, logg *log.Logger) bool {
 	git := gitRunner{path, h.gitTimeout, logg.Writer()}
 
 	if err := git.run("config", "--unset", "remote.origin.mirror"); err != nil {
@@ -187,8 +188,8 @@ func (h *handler) configureNewRepo(path string, logg *log.Logger) bool {
 	return true
 }
 
-func dirSize(path string) (size int64, err error) {
-	err = filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+func dirSize(path Path) (size int64, err error) {
+	err = filepath.WalkDir(path.S(), func(_ string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -236,7 +237,7 @@ func (h *handler) LRU(logg *log.Logger) bool {
 
 	type index struct {
 		mt time.Time
-		path string
+		path Path
 	}
 
 	idx := make([]index, 0, len(h.repos))
@@ -271,7 +272,7 @@ func (h *handler) LRU(logg *log.Logger) bool {
 		h.repos[i.path].cancelRefresher()
 		delete(h.repos, i.path)
 
-		if err := os.RemoveAll(i.path); err != nil {
+		if err := os.RemoveAll(i.path.S()); err != nil {
 			logg.Printf("Couldn't LRU evict %s: %v", repo, err)
 			continue
 		}
@@ -287,8 +288,8 @@ func (h *handler) LRU(logg *log.Logger) bool {
 	return true
 }
 
-func readAccess(path string, logg *log.Logger) time.Time {
-	accPath := filepath.Clean(path + "/lorebox.access")
+func readAccess(path Path, logg *log.Logger) time.Time {
+	accPath := path.Concat("lorebox.access").S()
 
 	info, err := os.Stat(accPath)
 
@@ -301,8 +302,8 @@ func readAccess(path string, logg *log.Logger) time.Time {
 }
 
 
-func recordAccess(path string, logg *log.Logger) {
-	accPath := filepath.Clean(path + "/lorebox.access")
+func recordAccess(path Path, logg *log.Logger) {
+	accPath := path.Concat("lorebox.access").S()
 
 	// Doesn't exist; touch
 	if _, err := os.Stat(accPath); err != nil {
@@ -340,15 +341,15 @@ func (h *handler) applyDiskUsagePolicy(logg *log.Logger) bool {
 	return true
 }
 
-func (h *handler) fetchRepo(repo string, logg *log.Logger, scheme string) bool {
+func (h *handler) fetchRepo(repo RepoPath, logg *log.Logger, scheme string) bool {
 
-	success, _, _ := h.fetchGroup.Do(repo, func() (any, error) {
+	success, _, _ := h.fetchGroup.Do(repo.S(), func() (any, error) {
 	
 		if !h.applyDiskUsagePolicy(logg) {
 			return false, nil
 		}
 
-		url := scheme + ":/" + repo
+		url := scheme + ":/" + repo.S()
 		
 		git := gitRunner{h.root, h.gitTimeout, logg.Writer()}
 
@@ -358,10 +359,12 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger, scheme string) bool {
 			return false, nil
 		}
 
-		path := h.root + repo
+		path := repo.Path(h)
 
-		tempPath, err := os.MkdirTemp(h.root + "/.tmp", "repo-fetch-*")
-		defer os.RemoveAll(tempPath)
+		stempPath, err := os.MkdirTemp(h.root.S() + "/.tmp", "repo-fetch-*")
+		defer os.RemoveAll(stempPath)
+
+		tempPath := Path(stempPath)
 
 		if err != nil {
 			logg.Printf("Failed to make a temporary directory for '%s' fetch: %v", url, err)
@@ -370,7 +373,7 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger, scheme string) bool {
 
 		git.timeout = h.gitCloneTimeout
 
-		if err := git.run("clone", "--mirror", url, tempPath); err != nil {
+		if err := git.run("clone", "--mirror", url, tempPath.S()); err != nil {
 			logg.Printf("Failed to mirror clone '%s': %v", url, err)
 			return false, nil
 		}
@@ -389,12 +392,12 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger, scheme string) bool {
 			logg.Printf("Failed to calculate directory size: %s", path)
 		}
 		
-		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path.S()), 0755); err != nil {
 			logg.Print(err)
 			return false, nil
 		}
 
-		if err := os.Rename(tempPath, path); err != nil {
+		if err := os.Rename(tempPath.S(), path.S()); err != nil {
 			logg.Printf("Failed to move %s to %s", tempPath, path)
 			return false, nil
 		}
@@ -477,14 +480,15 @@ func (h *handler) requireAuth(req *http.Request, authLevel int) (string, int, bo
 	return id, level, true
 }
 
-func (h *handler) updateRepoSize(repo string) {
-	size, err := dirSize(h.root + repo)
+func (h *handler) updateRepoSize(repo RepoPath) {
+	path := repo.Path(h)
+
+	size, err := dirSize(path)
 
 	if err != nil {
 		log.Printf("Could not calculate size of %s: %v", repo, err)
 	}
 
-	path := h.root + repo
 	h.reposLock.Lock()
 	r := h.repos[path]
 	r.size = size
@@ -493,12 +497,12 @@ func (h *handler) updateRepoSize(repo string) {
 }
 
 func (h *handler) handlePush(w http.ResponseWriter, req *http.Request) {
-	if !selfHosted(req.URL.Path) {
+	if !selfHosted(RepoPath(req.URL.Path)) {
 		h.serve400(w)
 		return
 	}
 
-	owner, repoName := parseSelfHosted(req.URL.Path)
+	owner, repoName := parseSelfHosted(RepoPath(req.URL.Path))
 
 	// Auth required, obviously
 	who, level, ok := h.requireAuth(req, authLevelPush)
@@ -515,30 +519,31 @@ func (h *handler) handlePush(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	repo := chopPostfix(req.URL.Path, "/git-receive-pack")
+	repo := NewRepoPath(chopPostfix(req.URL.Path, "/git-receive-pack"))
+	path := repo.Path(h)
 
 	// Exists
-	if _, err := os.Stat(h.root + repo); err == nil {
+	if _, err := os.Stat(repo.Path(h).S()); err == nil {
 		h.git.ServeHTTP(w, req)
 		h.updateRepoSize(repo)
 		return
 	}
 
 	// Doesn't exist, so create
-	if !h.gitInit(h.root + repo, log.Default()) {
+	if !h.gitInit(path, log.Default()) {
 		log.Printf("Couldn't init %s", repo)
 		h.serve500(w)
 		return
 	}
 	
-	size, err := dirSize(h.root + repo)
+	size, err := dirSize(path)
 
 	if err != nil {
 		log.Printf("Could not calculate size of %s: %v", repo, err)
 	}
 
 	h.reposLock.Lock()
-	h.repos[h.root + repo] = repoDescription {
+	h.repos[path] = repoDescription {
 		repo: repo,
 		selfHosted: true,
 		size: size,
@@ -550,11 +555,12 @@ func (h *handler) handlePush(w http.ResponseWriter, req *http.Request) {
 }
 
 func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc string) {
-	repo := chopInfoRefs(filepath.Clean("/" + req.URL.Path))
+	repo := NewRepoPath(chopInfoRefs(filepath.Clean("/" + req.URL.Path)))
+	path := repo.Path(h)
 
 	miss := false
 	// Doesn't exist, so pull
-	if _, err := os.Stat(h.root + repo); err != nil {
+	if _, err := os.Stat(path.S()); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			fmt.Printf("Can't stat '%s': %v", repo, err)
 			h.serve500(w)
@@ -570,7 +576,7 @@ func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc strin
 
 		// For a self-hosted repo, we create it if we have the permissions
 		if h.allowPush && selfHosted(repo) && level >= authLevelPush {
-			owner, repoName := parseSelfHosted(req.URL.Path)
+			owner, repoName := parseSelfHosted(RepoPath(req.URL.Path))
 
 			// You can only push to your own repo, unless you are an admin
 			if who != owner && level != authLevelAdmin {
@@ -579,20 +585,20 @@ func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc strin
 				return
 			}
 
-			if !h.gitInit(h.root + repo, log.Default()) {
+			if !h.gitInit(path, log.Default()) {
 				log.Printf("Couldn't init %s: %v", repo, err)
 				h.serve500(w)
 				return
 			}
 
-			size, err := dirSize(h.root + repo)
+			size, err := dirSize(path)
 
 			if err != nil {
 				log.Printf("Could not calculate size of %s: %v", repo, err)
 			}
 
 			h.reposLock.Lock()
-			h.repos[h.root + repo] = repoDescription {
+			h.repos[path] = repoDescription {
 				repo: repo,
 				selfHosted: true,
 				size: size,
@@ -621,7 +627,6 @@ func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc strin
 
 	// Statistics
 	h.reposLock.Lock()
-	path := h.root + repo
 	r := h.repos[path]
 	r.requests++
 	h.repos[path] = r
@@ -639,7 +644,7 @@ func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc strin
 }
 
 func (h *handler) requireSHAuth(req *http.Request) (string, string, bool) {
-	owner, repoName := parseSelfHosted(req.URL.Path)
+	owner, repoName := parseSelfHosted(RepoPath(req.URL.Path))
 
 	// Invalid syntax
 	if owner == "" || repoName == "" {
@@ -713,7 +718,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		_, repo, ok := strings.Cut(req.URL.Path[len("/+/"):], "/")
+		_, srepo, ok := strings.Cut(req.URL.Path[len("/+/"):], "/")
 
 		if !ok {
 			log.Printf("Invalid path for GET /+/: '%s'", req.URL.Path)
@@ -721,7 +726,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		owner, name := parseSelfHosted("/~/" + repo)
+		owner, name := parseSelfHosted(RepoPath("/~/").Concat(srepo))
 
 		if who != owner && level != authLevelAdmin {
 			log.Printf("%s tried to access api for controlling self-hosted %s/%s (they don't own it)", who, owner, name)
@@ -745,7 +750,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.Method == "GET" && hasPostfix(req.URL.Path, infoRefs) {
 
 		// Hidden repos can only be seen by their owner and admin
-		if h.hiddenRepoPath(req.URL.Path, log.Default()) {
+		if h.hiddenRepoPath(RepoPath(req.URL.Path), log.Default()) {
 			if who, repo, ok := h.requireSHAuth(req); !ok {
 				h.serve404(w)
 				log.Printf("%s tried to fetch a hidden repo they don't own: %s", who, repo)
@@ -790,18 +795,18 @@ func (h *handler) walkRepos() {
 
 	log.Printf("Walking document root to find already existing repos...")
 
-	var walk func(dir string, depth int) (repos map[string]repoDescription)
+	var walk func(dir Path, depth int) (repos map[Path]repoDescription)
 
-	walk = func(dir string, depth int) (repos map[string]repoDescription) {
+	walk = func(dir Path, depth int) (repos map[Path]repoDescription) {
 		if depth > maxDepth {
 			return
 		}
 		// Don't walk into /.tmp
-		if dir == h.root + "/.tmp" {
+		if dir == h.tmpDir() {
 			return
 		}
 
-		info, err := os.Stat(dir)
+		info, err := os.Stat(dir.S())
 
 		if err != nil {
 			log.Printf("Error while walking: %v", err)
@@ -812,7 +817,7 @@ func (h *handler) walkRepos() {
 			return
 		}
 
-		entries, err := os.ReadDir(dir)
+		entries, err := os.ReadDir(dir.S())
 
 		if err != nil {
 			log.Printf("Error while walking: %v", err)
@@ -829,9 +834,9 @@ func (h *handler) walkRepos() {
 					log.Printf("Could not measure size of %s", dir)
 				}
 
-				return map[string]repoDescription {
+				return map[Path]repoDescription {
 					dir: {
-						repo: h.chopRoot(dir),
+						repo: dir.RepoPath(h),
 						size: size,
 					},
 				}
@@ -839,9 +844,9 @@ func (h *handler) walkRepos() {
 		}
 
 		// Walk subdirectories
-		repos = map[string]repoDescription{}
+		repos = map[Path]repoDescription{}
 		for _, e := range entries {
-			found := walk(dir + "/" + e.Name(), depth + 1)
+			found := walk(dir.Concat(e.Name()), depth + 1)
 			maps.Copy(repos, found)
 		}
 
@@ -862,22 +867,6 @@ func (h *handler) walkRepos() {
 	log.Printf("Done walking repos")
 }
 
-func expandPath(path string) (string, error) {
-	path, err := filepath.Abs(path)
-
-	if err != nil {
-		return "", err
-	}
-
-	resolved, err := filepath.EvalSymlinks(path)
-
-	if err != nil {
-		return path, nil
-	}
-
-	return resolved, nil
-}
-
 func (h *handler) jitteredRefresh() time.Duration {
 	jitter := time.Duration(0)
 	if span := h.maxJitter - h.minJitter; span > 0 {
@@ -886,7 +875,7 @@ func (h *handler) jitteredRefresh() time.Duration {
 	return h.defaultRefresh + h.minJitter + jitter
 }
 
-func (h *handler) refresher(ctx context.Context, path string) {
+func (h *handler) refresher(ctx context.Context, path Path) {
 	duration := h.jitteredRefresh()
 
 	for {
@@ -1174,16 +1163,18 @@ func main() {
 		return
 	}
 
-	var listen, root, configFile string
+	var listen, sroot, configFile string
 	var insecure bool
 
 	flag.StringVar(&listen, "listen", "", "Override the bind port and address")
-	flag.StringVar(&root, "root", "", "Override the document root")
+	flag.StringVar(&sroot, "root", "", "Override the document root")
 	flag.StringVar(&configFile, "config", "", "Point to the config YAML file")
 	flag.BoolVar(&insecure, "insecure", false, "Point to the config YAML file")
 	if err := flag.CommandLine.Parse(os.Args[2:]); err != nil {
 		log.Fatal(err)
 	}
+
+	root := Path(sroot)
 
 	log.Printf("Starting lorebox " + loreboxVersion)
 
@@ -1218,7 +1209,7 @@ func main() {
 	log.Printf("Config read")
 
 	if root != "" {
-		config.Root = root
+		config.Root = root.S()
 	}
 	if listen != "" {
 		config.Listen = listen
@@ -1251,7 +1242,7 @@ func main() {
 		log.Printf("Warning: disk:max set to less than 32K, that might be too little")
 	}
 
-	root, err = expandPath(config.Root)
+	root, err = Path(config.Root).expand()
 
 	if err != nil {
 		log.Fatal(err)
@@ -1260,18 +1251,6 @@ func main() {
 	// Used by fullSelfID()
 	loreboxName = config.Name
 
-	tmpDir := root + "/.tmp"
-	// Wipe
-	os.RemoveAll(tmpDir)
-	// Create
-	if err := os.Mkdir(tmpDir, 0700); err != nil {
-		log.Fatal(err)
-	}
-
-	// Self-hosted repos go here
-	if err := os.MkdirAll(root + "/~", 0700); err != nil {
-		log.Fatal(err)
-	}
 
 	html400 = processStaticPage(html400, cssStyle)
 	html401 = processStaticPage(html401, cssStyle)
@@ -1303,15 +1282,28 @@ func main() {
 		allowPush: config.Push,
 		git: &cgi.Handler {
 			Path: backend,
-			Dir: root,
+			Dir: root.S(),
 			Env: []string {
-				"GIT_PROJECT_ROOT=" + root,
+				"GIT_PROJECT_ROOT=" + root.S(),
 				"GIT_HTTP_EXPORT_ALL=1",
 			},
 		},
 	}
 
 	h.startup = time.Now()
+
+	tmpDir := h.tmpDir()
+	// Wipe
+	os.RemoveAll(tmpDir.S())
+	// Create
+	if err := os.Mkdir(tmpDir.S(), 0700); err != nil {
+		log.Fatal(err)
+	}
+
+	// Self-hosted repos go here
+	if err := os.MkdirAll(root.Concat("~").S(), 0700); err != nil {
+		log.Fatal(err)
+	}
 
 	h.tokens = map[string]tokenInfo{}
 

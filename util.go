@@ -1,7 +1,6 @@
 package main
 
 import ( 
-	"path/filepath"
 	"strconv"
 	"log"
 	"fmt"
@@ -33,20 +32,22 @@ func chopPostfix(str, postfix string) string {
 	return str
 }
 
-func (h *handler) chopRoot(path string) string {
-	if strings.HasPrefix(path, filepath.Clean(h.root) + "/") {
-		path = path[len(h.root):]
-	}
-	return path
-}
 
-func selfHosted(repo string) bool {
-	return strings.HasPrefix(repo, "/~/")
+//
+//func (h *handler) chopRoot(path string) string {
+//	if strings.HasPrefix(path, filepath.Clean(h.root.S()) + "/") {
+//		path = path[len(h.root):]
+//	}
+//	return path
+//}
+
+func selfHosted(repo RepoPath) bool {
+	return strings.HasPrefix(repo.S(), "/~/")
 }
 
 var pSHRegexpOnce sync.Once
 var pSHRegexp *regexp.Regexp
-func parseSelfHosted(repo string) (owner, name string) {
+func parseSelfHosted(repo RepoPath) (owner, name string) {
 
 	pSHRegexpOnce.Do(func() {
 		var err error
@@ -56,7 +57,7 @@ func parseSelfHosted(repo string) (owner, name string) {
 		}
 	})
 
-	matches := pSHRegexp.FindStringSubmatch(repo)	
+	matches := pSHRegexp.FindStringSubmatch(repo.S())	
 
 	if matches == nil {
 		return

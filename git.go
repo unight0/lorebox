@@ -7,12 +7,11 @@ import (
 	"os/exec"
 	"log"
 	"fmt"
-	"path/filepath"
 	"errors"
 )
 
 type gitRunner struct {
-	path string
+	path Path
 	timeout time.Duration
 	out io.Writer
 }
@@ -21,7 +20,7 @@ func (g *gitRunner) run(args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), g.timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = g.path
+	cmd.Dir = g.path.S()
 	cmd.Stdout = g.out
 	cmd.Stderr = g.out
 	return cmd.Run()
@@ -31,15 +30,15 @@ func (g *gitRunner) output(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), g.timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = g.path
+	cmd.Dir = g.path.S()
 	cmd.Stderr = g.out
 	return cmd.Output()
 }
 
-func (h *handler) gitInit(path string, logg *log.Logger) bool {
+func (h *handler) gitInit(path Path, logg *log.Logger) bool {
 	git := gitRunner{h.root, h.gitTimeout, logg.Writer()}
 
-	err := git.run("init", "--bare", path)
+	err := git.run("init", "--bare", path.S())
 
 	if err != nil {
 		return false
@@ -59,7 +58,7 @@ func (h *handler) gitInit(path string, logg *log.Logger) bool {
 	return h.updateServerInfo(path, log.Default())
 }
 
-func (h *handler) updateServerInfo(path string, logg *log.Logger) bool {
+func (h *handler) updateServerInfo(path Path, logg *log.Logger) bool {
 	git := gitRunner{path, h.gitTimeout, logg.Writer()}
 
 	if err := git.run("update-server-info"); err != nil {
@@ -70,13 +69,13 @@ func (h *handler) updateServerInfo(path string, logg *log.Logger) bool {
 	return true
 }
 
-func (h *handler) pinRepo(repo string, logg *log.Logger) bool {
+func (h *handler) pinRepo(repo RepoPath, logg *log.Logger) bool {
 	if selfHosted(repo) {
 		logg.Printf("Cannot pin %s: repo is self-hosted", repo)
 		return false
 	}
 
-	path := filepath.Clean(h.root + "/" + repo)
+	path := repo.Path(h)
 
 	git := gitRunner{path, h.gitTimeout, logg.Writer()}
 
@@ -88,13 +87,13 @@ func (h *handler) pinRepo(repo string, logg *log.Logger) bool {
 	return true
 }
 
-func (h *handler) unpinRepo(repo string, logg *log.Logger) bool {
+func (h *handler) unpinRepo(repo RepoPath, logg *log.Logger) bool {
 	if selfHosted(repo) {
 		logg.Printf("Cannot unpin %s: repo is self-hosted", repo)
 		return false
 	}
 
-	path := filepath.Clean(h.root + "/" + repo)
+	path := repo.Path(h)
 
 	git := gitRunner{path, h.gitTimeout, logg.Writer()}
 
@@ -106,13 +105,13 @@ func (h *handler) unpinRepo(repo string, logg *log.Logger) bool {
 	return true
 }
 
-func (h *handler) repoPinned(repo string, logg *log.Logger) bool {
+func (h *handler) repoPinned(repo RepoPath, logg *log.Logger) bool {
 	if selfHosted(repo) {
 		//logg.Printf("Pinned/unpinned status is not applicable to self-hosted repo %s", repo)
 		return false
 	}
 
-	path := filepath.Clean(h.root + "/" + repo)
+	path := repo.Path(h)
 
 	git := gitRunner{path, h.gitTimeout, logg.Writer()}
 
@@ -129,13 +128,13 @@ func (h *handler) repoPinned(repo string, logg *log.Logger) bool {
 	return true
 }
 
-func (h *handler) hideRepo(repo string, logg *log.Logger) bool {
+func (h *handler) hideRepo(repo RepoPath, logg *log.Logger) bool {
 	if !selfHosted(repo) {
 		logg.Printf("Can't hide %s: repo is not self-hosted", repo)
 		return false
 	}
 
-	path := filepath.Clean(h.root + "/" + repo)
+	path := repo.Path(h)
 
 	git := gitRunner{path, h.gitTimeout, logg.Writer()}	
 
@@ -147,13 +146,13 @@ func (h *handler) hideRepo(repo string, logg *log.Logger) bool {
 	return true
 }
 
-func (h *handler) unhideRepo(repo string, logg *log.Logger) bool {
+func (h *handler) unhideRepo(repo RepoPath, logg *log.Logger) bool {
 	if !selfHosted(repo) {
 		logg.Printf("Can't unhide %s: repo is not self-hosted", repo)
 		return false
 	}
 
-	path := filepath.Clean(h.root + "/" + repo)
+	path := repo.Path(h)
 
 	git := gitRunner{path, h.gitTimeout, logg.Writer()}	
 
@@ -165,12 +164,12 @@ func (h *handler) unhideRepo(repo string, logg *log.Logger) bool {
 	return true
 }
 
-func (h *handler) repoHidden(repo string, logg *log.Logger) bool {
+func (h *handler) repoHidden(repo RepoPath, logg *log.Logger) bool {
 	if !selfHosted(repo) {
 		return false
 	}
 
-	path := filepath.Clean(h.root + "/" + repo)
+	path := repo.Path(h)
 
 	git := gitRunner{path, h.gitTimeout, io.Discard}
 
@@ -187,7 +186,7 @@ func (h *handler) repoHidden(repo string, logg *log.Logger) bool {
 	return true
 }
 
-func (h *handler) hiddenRepoPath(rpath string, logg *log.Logger) bool {
+func (h *handler) hiddenRepoPath(rpath RepoPath, logg *log.Logger) bool {
 	if !selfHosted(rpath) {
 		return false
 	}
@@ -199,5 +198,5 @@ func (h *handler) hiddenRepoPath(rpath string, logg *log.Logger) bool {
 		return false
 	}
 
-	return h.repoHidden(fmt.Sprintf("/~/%s/%s", owner, name), logg)
+	return h.repoHidden(RepoPath(fmt.Sprintf("/~/%s/%s", owner, name)), logg)
 }

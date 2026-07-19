@@ -98,7 +98,9 @@ func (h *handler) serveRepoIndex(w http.ResponseWriter) {
 	h.reposLock.RLock()
 	repos := make([]string, 0, len(h.repos))
 	for _, d := range h.repos {
-		repos = append(repos, d.repo)
+		if !h.repoHidden(d.repo, log.Default()) {
+			repos = append(repos, d.repo)
+		}
 	}
 	h.reposLock.RUnlock()
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 	"bytes"
+	"os"
 	"encoding/json"
 	"go.yaml.in/yaml/v4"
 )
@@ -34,6 +35,7 @@ func (h *handler) apiList(w http.ResponseWriter) {
 			Size: d.size,
 			Requests: d.requests,
 			SelfHosted: d.selfHosted,
+			Hidden: h.repoHidden(d.repo, log.Default()),
 		}
 
 		repos.Repos[p] = repo
@@ -284,3 +286,73 @@ func (h *handler) api(w http.ResponseWriter, req *http.Request) {
 	h.serve400(w)
 }
 
+func (h *handler) apiSHCreate(w http.ResponseWriter, repo string) {
+	h.apiSimpleTr(w, func (logg *log.Logger) bool {
+		repo = "/~" + repo
+
+		if _, err := os.Stat(h.root + repo); err == nil {
+			logg.Printf("Can't init %s: already exists", repo)
+			return false
+		}
+
+		return h.gitInit(h.root + repo, logg)
+	})
+}
+
+func (h *handler) apiSHDelete(w http.ResponseWriter, repo string) {
+	h.apiSimpleTr(w, func (logg *log.Logger) bool {
+		repo = "/~" + repo
+		logg.Printf("Removing %s...", repo)
+
+		if _, err := os.Stat(h.root + repo); err != nil {
+			logg.Printf("Could not stat %s: %v", repo, err)
+			return false
+		}
+		
+		err := os.RemoveAll(h.root + repo)
+		if err != nil {
+			logg.Printf("Could not remote %s: %v", repo, err)
+			return false
+		}
+		return true
+	})
+}
+
+func (h *handler) apiSHHide(w http.ResponseWriter, repo string) {
+	h.apiSimpleTr(w, func (logg *log.Logger) bool {
+		repo = "/~" + repo
+		return h.hideRepo(repo, logg)
+	})
+}
+
+func (h *handler) apiSHUnhide(w http.ResponseWriter, repo string) {
+	h.apiSimpleTr(w, func (logg *log.Logger) bool {
+		repo = "/~" + repo
+		return h.unhideRepo(repo, logg)
+	})
+}
+
+func (h *handler) apiSelfHosted(w http.ResponseWriter, req *http.Request) {
+	if strings.HasPrefix(req.URL.Path, "/+/create/") {
+		h.apiSHCreate(w, req.URL.Path[len("/-/create"):])
+		return
+	}
+
+	if strings.HasPrefix(req.URL.Path, "/+/delete/") {
+		h.apiSHDelete(w, req.URL.Path[len("/-/delete"):])
+		return
+	}
+
+	if strings.HasPrefix(req.URL.Path, "/+/hide/") {
+		h.apiSHHide(w, req.URL.Path[len("/+/hide"):])
+		return
+	}
+
+	if strings.HasPrefix(req.URL.Path, "/+/unhide/") {
+		h.apiSHUnhide(w, req.URL.Path[len("/+/unhide"):])
+		return
+	}
+
+	// Invalid API endpoint
+	h.serve400(w)
+}

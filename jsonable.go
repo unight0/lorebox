@@ -26,6 +26,7 @@ type jsonableRepo struct {
 	Requests int64		`json:"requests"`
 	Pinned bool			`json:"pinned"`
 	SelfHosted bool		`json:"self-hosted"`
+	Hidden bool			`json:"hidden"`
 	LastError time.Time	`json:"last-error"`
 }
 

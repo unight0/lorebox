@@ -24,12 +24,12 @@ type clientContext struct {
 	box, auth, proto string
 }
 
-func (c *clientContext) api(name string) string {
-	return c.proto + "://" + c.box + "/-/" + name
+func (c *clientContext) api(name, kind string) string {
+	return c.proto + "://" + c.box + kind + name
 }
 
-func (c *clientContext) apiRequest(what string) *http.Response {
-	req, err := http.NewRequest(http.MethodGet, c.api(what), nil)
+func (c *clientContext) apiRequest(what, apiType string) *http.Response {
+	req, err := http.NewRequest(http.MethodGet, c.api(what, apiType), nil)
 
 	if err != nil {
 		log.Fatalf("Http request error: %v", err)
@@ -71,7 +71,7 @@ func sayStatusCode(code int) {
 func (c *clientContext) refreshAll() {
 	fmt.Printf("This may take a while -- please be patient...\n")
 
-	resp := c.apiRequest("refresh-all")
+	resp := c.apiRequest("refresh-all", "/-/")
 
 	sayStatusCode(resp.StatusCode)
 
@@ -97,7 +97,7 @@ func (c *clientContext) refreshAll() {
 }
 
 func (c *clientContext) list() {
-	resp := c.apiRequest("list")
+	resp := c.apiRequest("list", "/-/")
 
 	sayStatusCode(resp.StatusCode)
 
@@ -121,6 +121,9 @@ func (c *clientContext) list() {
 		fmt.Printf("    Pinned: %t\n", r.Pinned)
 		fmt.Printf("    Requested: %d times\n", r.Requests)
 		fmt.Printf("    Self-hosted: %t\n", r.SelfHosted)
+		if r.SelfHosted {
+			fmt.Printf("    Hidden: %t\n", r.Hidden)
+		}
 		if !r.LastError.IsZero() {
 			fmt.Printf("    Error fetching at: %s\n", r.LastError)
 		}
@@ -128,7 +131,7 @@ func (c *clientContext) list() {
 }
 
 func (c *clientContext) status() {
-	resp := c.apiRequest("status")
+	resp := c.apiRequest("status", "/-/")
 
 	sayStatusCode(resp.StatusCode)
 
@@ -176,8 +179,8 @@ func (c *clientContext) status() {
 	fmt.Printf("    CHR:    %.2f\n", cacheHitRatio)
 }
 
-func (c *clientContext) simple(what, description string) {
-	resp := c.apiRequest(what)
+func (c *clientContext) simpleGeneric(what, description string, apiType string) {
+	resp := c.apiRequest(what, apiType)
 
 	sayStatusCode(resp.StatusCode)
 
@@ -193,6 +196,14 @@ func (c *clientContext) simple(what, description string) {
 	fmt.Printf("=== Operation %s in box %s ===\n", description, c.box)
 	fmt.Printf("Status: %s\n", op.Status)
 	fmt.Printf("%s\n", op.Transcript)
+}
+
+func (c *clientContext) simple(what, description string) {
+	c.simpleGeneric(what, description, "/-/")
+}
+
+func (c *clientContext) simpleSH(what, description string) {
+	c.simpleGeneric(what, description, "/+/")
 }
 
 func (c *clientContext) refresh() {
@@ -233,8 +244,31 @@ func (c *clientContext) unpin() {
 	c.simple("unpin/" + repo, "unpin repo " + repo)
 }
 
+func (c *clientContext) create() {
+	repo := flag.Args()[0]
+
+	c.simpleSH("create/" + repo, "create repo " + repo)
+}
+
+func (c *clientContext) delete() {
+	repo := flag.Args()[0]
+
+	c.simpleSH("delete/" + repo, "delete repo " + repo)
+}
+func (c *clientContext) hide() {
+	repo := flag.Args()[0]
+
+	c.simpleSH("hide/" + repo, "hide repo " + repo)
+}
+
+func (c *clientContext) unhide() {
+	repo := flag.Args()[0]
+
+	c.simpleSH("unhide/" + repo, "unhide repo " + repo)
+}
+
 func (c *clientContext) effectiveConfig() {
-	resp := c.apiRequest("effective-config")
+	resp := c.apiRequest("effective-config", "/-/")
 
 	sayStatusCode(resp.StatusCode)
 
@@ -338,66 +372,84 @@ func client() {
 	}
 
 	switch os.Args[1] {
-	case "evict":
+	case "evict", "ev":
 		if len(flag.Args()) != 1 {
-			fmt.Printf("Evict requires exactly 1 argument\n")
+			fmt.Printf("evict requires exactly 1 argument\n")
 			usage()
 			return
 		}
 		cl.evict()
-		return
-	case "refresh":
+		case "refresh", "re":
 		if len(flag.Args()) != 1 {
-			fmt.Printf("Refresh requires exactly 1 argument\n")
+			fmt.Printf("refresh requires exactly 1 argument\n")
 			usage()
 			return
 		}
 		cl.refresh()
-		return
-	case "fetch":
+		case "fetch", "fe":
 		if len(flag.Args()) != 1 {
-			fmt.Printf("Fetch requires exactly 1 argument\n")
+			fmt.Printf("fetch requires exactly 1 argument\n")
 			usage()
 			return
 		}
 		cl.fetch()
-		return
-	case "fetch-http":
+		case "fetch-http", "feh":
 		if len(flag.Args()) != 1 {
-			fmt.Printf("Fetch requires exactly 1 argument\n")
+			fmt.Printf("fetch-http requires exactly 1 argument\n")
 			usage()
 			return
 		}
 		cl.fetchHttp()
-		return
-	case "pin":
+		case "pin":
 		if len(flag.Args()) != 1 {
-			fmt.Printf("Pin requires exactly 1 argument\n")
+			fmt.Printf("pin requires exactly 1 argument\n")
 			usage()
 			return
 		}
 		cl.pin()
-		return
-	case "unpin":
+		case "unpin", "unp":
 		if len(flag.Args()) != 1 {
-			fmt.Printf("Unpin requires exactly 1 argument\n")
+			fmt.Printf("unpin requires exactly 1 argument\n")
 			usage()
 			return
 		}
 		cl.unpin()
-		return
-	case "refresh-all":
+		case "init", "create", "cr":
+		if len(flag.Args()) != 1 {
+			fmt.Printf("create requires exactly 1 argument\n")
+			usage()
+			return
+		}
+		cl.create()
+		case "delete", "del":
+		if len(flag.Args()) != 1 {
+			fmt.Printf("delete requires exactly 1 argument\n")
+			usage()
+			return
+		}
+		cl.delete()
+		case "hide", "hid":
+		if len(flag.Args()) != 1 {
+			fmt.Printf("hide requires exactly 1 argument\n")
+			usage()
+			return
+		}
+		cl.hide()
+		case "unhide", "unh":
+		if len(flag.Args()) != 1 {
+			fmt.Printf("unhide requires exactly 1 argument\n")
+			usage()
+			return
+		}
+		cl.unhide()
+		case "refresh-all", "rea":
 		cl.refreshAll()
-		return
-	case "list":
+		case "list", "ls":
 		cl.list()
-		return
-	case "status":
+		case "status", "st", "stat":
 		cl.status()
-		return
-	case "effective-config":
+		case "effective-config", "conf":
 		cl.effectiveConfig()
-		return
 	default:
 		fmt.Printf("Unknown command verb: %v\n", os.Args[1])
 		usage()

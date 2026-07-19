@@ -6,7 +6,8 @@ import (
 	"io"
 	"os/exec"
 	"log"
-	"os"
+	"path/filepath"
+	"errors"
 )
 
 type gitRunner struct {
@@ -35,8 +36,8 @@ func (g *gitRunner) output(args ...string) ([]byte, error) {
 	return cmd.Output()
 }
 
-func (h *handler) gitInit(path string) bool {
-	git := gitRunner{h.root, h.gitTimeout, os.Stdout}
+func (h *handler) gitInit(path string, logg *log.Logger) bool {
+	git := gitRunner{h.root, h.gitTimeout, logg.Writer()}
 
 	err := git.run("init", "--bare", path)
 
@@ -64,3 +65,120 @@ func (h *handler) updateServerInfo(path string, logg *log.Logger) bool {
 	return true
 }
 
+func (h *handler) pinRepo(repo string, logg *log.Logger) bool {
+	if selfHosted(repo) {
+		logg.Printf("Cannot pin %s: repo is self-hosted", repo)
+		return false
+	}
+
+	path := filepath.Clean(h.root + "/" + repo)
+
+	git := gitRunner{path, h.gitTimeout, logg.Writer()}
+
+	if err := git.run("config", "lorebox.pinned", "true"); err != nil {
+		logg.Printf("Failed to pin %s: %v", repo, err)
+		return false
+	}
+
+	return true
+}
+
+func (h *handler) unpinRepo(repo string, logg *log.Logger) bool {
+	if selfHosted(repo) {
+		logg.Printf("Cannot unpin %s: repo is self-hosted", repo)
+		return false
+	}
+
+	path := filepath.Clean(h.root + "/" + repo)
+
+	git := gitRunner{path, h.gitTimeout, logg.Writer()}
+
+	if err := git.run("config", "--unset", "lorebox.pinned"); err != nil {
+		logg.Printf("Failed to pin '%s': %v", repo, err)
+		return false
+	}
+
+	return true
+}
+
+func (h *handler) repoPinned(repo string, logg *log.Logger) bool {
+	if selfHosted(repo) {
+		logg.Printf("Pinned/unpinned status is not applicable to self-hosted repo %s", repo)
+		return false
+	}
+
+	path := filepath.Clean(h.root + "/" + repo)
+
+	git := gitRunner{path, h.gitTimeout, logg.Writer()}
+
+	if err := git.run("config", "--bool", "lorebox.pinned"); err != nil {
+		if _, yes := errors.AsType[*exec.ExitError](err); yes {
+			return false
+		}
+
+		logg.Printf("Failed to check if repo is pinned '%s': %v", repo, err)
+		return false
+	}
+
+	// 0 exit code means it exists, in our case === true
+	return true
+}
+
+func (h *handler) hideRepo(repo string, logg *log.Logger) bool {
+	if !selfHosted(repo) {
+		logg.Printf("Can't hide %s: repo is not self-hosted", repo)
+		return false
+	}
+
+	path := filepath.Clean(h.root + "/" + repo)
+
+	git := gitRunner{path, h.gitTimeout, logg.Writer()}	
+
+	if err := git.run("config", "lorebox.hidden", "true"); err != nil {
+		logg.Printf("Failed to hide %s: %v", repo, err)
+		return false
+	}
+
+	return true
+}
+
+func (h *handler) unhideRepo(repo string, logg *log.Logger) bool {
+	if !selfHosted(repo) {
+		logg.Printf("Can't unhide %s: repo is not self-hosted", repo)
+		return false
+	}
+
+	path := filepath.Clean(h.root + "/" + repo)
+
+	git := gitRunner{path, h.gitTimeout, logg.Writer()}	
+
+	if err := git.run("config", "--unset", "lorebox.hidden"); err != nil {
+		logg.Printf("Failed to hide %s: %v", repo, err)
+		return false
+	}
+
+	return true
+}
+
+func (h *handler) repoHidden(repo string, logg *log.Logger) bool {
+	if !selfHosted(repo) {
+		logg.Printf("Can't unhide %s: repo is not self-hosted", repo)
+		return false
+	}
+
+	path := filepath.Clean(h.root + "/" + repo)
+
+	git := gitRunner{path, h.gitTimeout, logg.Writer()}
+
+	if err := git.run("config", "--bool", "lorebox.hidden"); err != nil {
+		if _, yes := errors.AsType[*exec.ExitError](err); yes {
+			return false
+		}
+
+		logg.Printf("Failed to check if repo is hidden '%s': %v", repo, err)
+		return false
+	}
+
+	// 0 exit code means it exists, in our case === true
+	return true
+}

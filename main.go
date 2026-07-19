@@ -261,6 +261,11 @@ func (h *handler) LRU(logg *log.Logger) bool {
 
 		repo := h.repos[i.path].repo
 
+		// Can't evict a self-hosted repo
+		if selfHosted(repo) {
+			continue
+		}
+
 		if h.repoPinned(repo, logg) {
 			logg.Printf("Can't LRU evict %s: repo is pinned", repo)
 			continue
@@ -298,64 +303,6 @@ func readAccess(path string, logg *log.Logger) time.Time {
 	return info.ModTime()
 }
 
-func (h *handler) pinRepo(repo string, logg *log.Logger) bool {
-	if selfHosted(repo) {
-		logg.Printf("Cannot pin %s: repo is self-hosted", repo)
-		return false
-	}
-
-	path := filepath.Clean(h.root + "/" + repo)
-
-	git := gitRunner{path, h.gitTimeout, logg.Writer()}
-
-	if err := git.run("config", "lorebox.pinned", "true"); err != nil {
-		logg.Printf("Failed to pin %s: %v", repo, err)
-		return false
-	}
-
-	return true
-}
-
-func (h *handler) unpinRepo(repo string, logg *log.Logger) bool {
-	if selfHosted(repo) {
-		logg.Printf("Cannot unpin %s: repo is self-hosted", repo)
-		return false
-	}
-
-	path := filepath.Clean(h.root + "/" + repo)
-
-	git := gitRunner{path, h.gitTimeout, logg.Writer()}
-
-	if err := git.run("config", "--unset", "lorebox.pinned"); err != nil {
-		logg.Printf("Failed to pin '%s': %v", repo, err)
-		return false
-	}
-
-	return true
-}
-
-func (h *handler) repoPinned(repo string, logg *log.Logger) bool {
-	if selfHosted(repo) {
-		logg.Printf("Pinned/unpinned status is not applicable to self-hosted repo %s", repo)
-		return false
-	}
-
-	path := filepath.Clean(h.root + "/" + repo)
-
-	git := gitRunner{path, h.gitTimeout, logg.Writer()}
-
-	if err := git.run("config", "--bool", "lorebox.pinned"); err != nil {
-		if _, yes := errors.AsType[*exec.ExitError](err); yes {
-			return false
-		}
-
-		logg.Printf("Failed to check if repo is pinned '%s': %v", repo, err)
-		return false
-	}
-
-	// 0 exit code means it exists, in our case === true
-	return true
-}
 
 func recordAccess(path string, logg *log.Logger) {
 	accPath := filepath.Clean(path + "/lorebox.access")
@@ -414,7 +361,7 @@ func (h *handler) fetchRepo(repo string, logg *log.Logger, scheme string) bool {
 			return false, nil
 		}
 
-		path := filepath.Clean(h.root + "/" + repo)
+		path := h.root + repo
 
 		tempPath, err := os.MkdirTemp(h.root + "/.tmp", "repo-fetch-*")
 		defer os.RemoveAll(tempPath)
@@ -572,7 +519,7 @@ func (h *handler) handlePush(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Doesn't exist, so create
-	if !h.gitInit(h.root + repo) {
+	if !h.gitInit(h.root + repo, log.Default()) {
 		log.Printf("Couldn't init %s", repo)
 		h.serve500(w)
 		return
@@ -610,7 +557,7 @@ func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc strin
 				return
 			}
 
-			if !h.gitInit(h.root + repo) {
+			if !h.gitInit(h.root + repo, log.Default()) {
 				log.Printf("Couldn't init %s: %v", repo, err)
 				h.serve500(w)
 				return
@@ -683,17 +630,44 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// Admin remote control panel API
 	if req.Method == "GET" && strings.HasPrefix(req.URL.Path, "/-/") {
-		if _, _, ok := h.requireAuth(w, req, authLevelAdmin); !ok {
-			log.Printf("Invalid auth")
+		who, _, ok := h.requireAuth(w, req, authLevelAdmin)
+		if !ok {
+			log.Printf("Invalid auth: %s", who)
 			return
 		}
 		// Prevent cross-site nastiness
 		if req.Header.Get("X-Lorebox-Api") != "On" {
-			log.Printf("Valid auth, but no X-Lorebox-Api header")
+			log.Printf("Valid auth, but no X-Lorebox-Api header: %s", who)
 			h.serve400(w)
 			return
 		}
 		h.api(w, req)
+		return
+	}
+
+	// Self-hosted repo control panel API
+	if req.Method == "GET" && strings.HasPrefix(req.URL.Path, "/+/") {
+
+		who, level, ok := h.requireAuth(w, req, authLevelAdmin)
+		if !ok {
+			log.Printf("Invalid auth: %s", who)
+			return
+		}
+
+		owner, name := parseSelfHosted(req.URL.Path[len("/+/"):])
+
+		if who != owner && level != authLevelAdmin {
+			log.Printf("%s tried to access api for controlling self-hosted %s/%s", who, owner, name)
+			return
+		}
+
+		// Prevent cross-site nastiness
+		if req.Header.Get("X-Lorebox-Api") != "On" {
+			log.Printf("Valid auth, but no X-Lorebox-Api header: %s", who)
+			h.serve400(w)
+			return
+		}
+		h.apiSelfHosted(w, req)
 		return
 	}
 
@@ -1091,7 +1065,7 @@ func main() {
 	}
 
 	switch os.Args[1] {
-	case "gen-token":
+	case "gen-token", "gen-tok", "gen":
 		if len(os.Args) != 3 {
 			fmt.Printf("lorebox gen-token requires 1 argument: username\n")
 			usage()
@@ -1099,7 +1073,7 @@ func main() {
 		}
 		generateCredentials(os.Args[2])
 		return
-	case "register":
+	case "register", "reg":
 		registerWithGit()
 		return
 	case "credential":
@@ -1110,7 +1084,10 @@ func main() {
 		}
 		credentialHelper()
 		return
-	case "serve":
+	case "synonyms", "syns", "syn":
+		synonyms()
+		return
+	case "serve", "srv":
 		break
 	default:
 		client()

@@ -59,10 +59,6 @@ type repoDescription struct {
 	cancelRefresher func()
 }
 
-const loreboxVersion = "v0.4"
-	
-var infoRefs = "/info/refs"
-
 func (h *handler) refreshDefaultBranch(path string) bool {
 	git := gitRunner{path, h.gitTimeout, os.Stdout}
 
@@ -448,12 +444,6 @@ func (h *handler) validateCredentials(id, token string, requiredAuthLevel int) (
 	return servToken.level, true
 }
 
-const (
-	authLevelNone int = iota
-	authLevelFetch
-	authLevelPush
-	authLevelAdmin
-)
 
 func stringToAuthLevel(s string) int {
 	switch s {
@@ -602,6 +592,27 @@ func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc strin
 
 }
 
+func (h *handler) requireSHAuth(w http.ResponseWriter, req *http.Request) (string, string, bool) {
+	owner, repoName := parseSelfHosted(req.URL.Path)
+
+	// Invalid syntax
+	if owner == "" || repoName == "" {
+		h.serve400(w)
+		return "", "", false
+	}
+
+	repo := owner + "/" + repoName
+
+	// Auth required, obviously
+	who, level, ok := h.requireAuth(w, req, authLevelPush)
+	if !ok {
+		log.Printf("Invalid SH auth: %s", who)
+		return who, repo, false
+	}
+
+	return who, repo, who == owner || level == authLevelAdmin
+}
+
 func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	h.totalRequests.Add(1)
@@ -672,9 +683,19 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Smart ref advertisement
-	// Request for ../info/refs, a start of the git repo transmission. Either
+	// Request for .../info/refs, a start of the git repo transmission. Either
 	// pull (if not available) or just serve
 	if req.Method == "GET" && hasPostfix(req.URL.Path, infoRefs) {
+
+		// Hidden repos can only be seen by their owner and admin
+		if h.hiddenRepoPath(req.URL.Path, log.Default()) {
+			if who, repo, ok := h.requireSHAuth(w, req); !ok {
+				log.Printf("%s tried to fetch a hidden repo they don't own: %s", who, repo)
+				h.serve404(w)
+				return
+			}
+		}
+
 		h.handlePull(w, req, svc)
 		return
 	}
@@ -1195,9 +1216,9 @@ func main() {
 	}
 
 	html400 = processStaticPage(html400, cssStyle)
-	html401 = processStaticPage(html400, cssStyle)
-	html404 = processStaticPage(html400, cssStyle)
-	html500 = processStaticPage(html400, cssStyle)
+	html401 = processStaticPage(html401, cssStyle)
+	html404 = processStaticPage(html404, cssStyle)
+	html500 = processStaticPage(html500, cssStyle)
 	
 	ctx, cancel := context.WithTimeout(context.Background(), config.Timeouts.Git.Regular.D())
 	defer cancel()

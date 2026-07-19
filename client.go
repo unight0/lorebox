@@ -286,8 +286,6 @@ func (c *clientContext) effectiveConfig() {
 	fmt.Printf("%s\n", ec.Config)
 }
 
-const defaultConfigFile = "~/.config/lorebox/client.yml"
-
 func getConfigData(configFile string) (configData []byte) {
 	silenceNotExists := configFile == defaultConfigFile
 

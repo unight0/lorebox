@@ -88,6 +88,9 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 		if h.excludedPath(filepath.Clean(h.root + "/" + path + "/" + e.Name())) {
 			continue
 		}
+		if h.hiddenRepoPath(path + "/" + e.Name(), log.Default()) {
+			continue
+		}
 
 		dir := `<span class="no">No</span>`
 
@@ -122,7 +125,7 @@ func (h *handler) serveDir(w http.ResponseWriter, path string) {
 		)
 	}
 
-	fmt.Fprintf(bw, "</tbody></table><hr> %s", fullSelfID())
+	fmt.Fprintf(bw, "</tbody></table><hr><i>%s</i>", fullSelfID())
 	bw.Write(htmlGenericEnd)
 	bw.Flush()
 }
@@ -230,6 +233,12 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 
 	if h.excludedPath(path) {
 		log.Printf("Excluded repo path access: %s\n", relpath)
+		h.serve404(w)
+		return
+	}
+
+	if h.hiddenRepoPath(relpath, log.Default()) {
+		log.Printf("Hidden repo path access: %s\n", relpath)
 		h.serve404(w)
 		return
 	}

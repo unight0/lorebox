@@ -147,7 +147,7 @@ func parseDiskSize(size string) int64 {
 }
 
 func processStaticPage(page []byte, style string) []byte {
-	spage := strings.ReplaceAll(string(html400), "__LOREBOX_VERSION", fullSelfID())
+	spage := strings.ReplaceAll(string(page), "__LOREBOX_VERSION", fullSelfID())
 	spage = strings.ReplaceAll(spage, "__STYLE", style)
 	return []byte(spage)
 }

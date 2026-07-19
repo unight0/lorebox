@@ -146,7 +146,7 @@ func (h *handler) apiSimpleTr(w http.ResponseWriter, f func(*log.Logger) bool) {
 		op.Status = "Internal error"
 	}
 
-	op.Transcript = string(tr.Bytes())
+	op.Transcript = tr.String()
 
 	marsh, err := json.Marshal(op)
 

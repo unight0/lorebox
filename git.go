@@ -6,6 +6,7 @@ import (
 	"io"
 	"os/exec"
 	"log"
+	"fmt"
 	"path/filepath"
 	"errors"
 )
@@ -46,8 +47,13 @@ func (h *handler) gitInit(path string, logg *log.Logger) bool {
 	}
 
 	git.path = path
-	err = git.run("config", "http.receivepack", "true")
-	if err != nil {
+	
+	if err := git.run("config", "http.receivepack", "true"); err != nil {
+		return false
+	}
+
+	if err := git.run("config", "lorebox.hidden", "true"); err != nil {
+		logg.Printf("Failed to hide %s: %v", path, err)
 		return false
 	}
 
@@ -162,13 +168,12 @@ func (h *handler) unhideRepo(repo string, logg *log.Logger) bool {
 
 func (h *handler) repoHidden(repo string, logg *log.Logger) bool {
 	if !selfHosted(repo) {
-		logg.Printf("Can't unhide %s: repo is not self-hosted", repo)
 		return false
 	}
 
 	path := filepath.Clean(h.root + "/" + repo)
 
-	git := gitRunner{path, h.gitTimeout, logg.Writer()}
+	git := gitRunner{path, h.gitTimeout, io.Discard}
 
 	if err := git.run("config", "--bool", "lorebox.hidden"); err != nil {
 		if _, yes := errors.AsType[*exec.ExitError](err); yes {
@@ -181,4 +186,19 @@ func (h *handler) repoHidden(repo string, logg *log.Logger) bool {
 
 	// 0 exit code means it exists, in our case === true
 	return true
+}
+
+func (h *handler) hiddenRepoPath(rpath string, logg *log.Logger) bool {
+	if !selfHosted(rpath) {
+		return false
+	}
+
+	owner, name := parseSelfHosted(rpath)
+	
+	// Could not parse
+	if owner == "" || name == "" {
+		return false
+	}
+
+	return h.repoHidden(fmt.Sprintf("/~/%s/%s", owner, name), logg)
 }

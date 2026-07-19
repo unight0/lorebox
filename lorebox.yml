@@ -59,13 +59,17 @@ tokens:
     hash: "7Kkm-owmxvCmrKE4U6OzSEuPhhyIMzNtvYWkS8yfJjo"
     level: "admin"
 
+
+# Enable pushing, creating and deleting self-hosted repositories
+# Default is false
+push: true
+
 # Certificate and key to use for HTTPS. Obtain them from a provider like
 # Letsencrypt, etc. Please use absolute paths here for predictable behaviour
 # independent from the location you run the binary from
 # https:
 #  certificate: "cert.pem"
 #  key: "key.pem"
-
 
 # Ignore, just an idea
 ## Scout mode. Creates colophons of all pulled commits and keeps them in a

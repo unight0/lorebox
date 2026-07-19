@@ -231,6 +231,12 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 	relpath := filepath.Clean("/" + req.URL.Path)
 	path, err := expandPath(h.root + relpath)
 
+	if err != nil {
+		log.Printf("expandPath(): %v", err)
+		h.serve500(w)
+		return
+	}
+
 	if h.excludedPath(path) {
 		log.Printf("Excluded repo path access: %s\n", relpath)
 		h.serve404(w)
@@ -240,12 +246,6 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 	if h.hiddenRepoPath(relpath, log.Default()) {
 		log.Printf("Hidden repo path access: %s\n", relpath)
 		h.serve404(w)
-		return
-	}
-
-	if err != nil {
-		log.Printf("expandPath(): %v", err)
-		h.serve500(w)
 		return
 	}
 

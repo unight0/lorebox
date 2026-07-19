@@ -32,7 +32,6 @@ func (g *gitRunner) output(args ...string) ([]byte, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = g.path
-	cmd.Stdout = g.out
 	cmd.Stderr = g.out
 	return cmd.Output()
 }
@@ -109,7 +108,7 @@ func (h *handler) unpinRepo(repo string, logg *log.Logger) bool {
 
 func (h *handler) repoPinned(repo string, logg *log.Logger) bool {
 	if selfHosted(repo) {
-		logg.Printf("Pinned/unpinned status is not applicable to self-hosted repo %s", repo)
+		//logg.Printf("Pinned/unpinned status is not applicable to self-hosted repo %s", repo)
 		return false
 	}
 
@@ -159,7 +158,7 @@ func (h *handler) unhideRepo(repo string, logg *log.Logger) bool {
 	git := gitRunner{path, h.gitTimeout, logg.Writer()}	
 
 	if err := git.run("config", "--unset", "lorebox.hidden"); err != nil {
-		logg.Printf("Failed to hide %s: %v", repo, err)
+		logg.Printf("Failed to unhide %s: %v", repo, err)
 		return false
 	}
 

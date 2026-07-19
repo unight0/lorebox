@@ -146,7 +146,7 @@ func (c *clientContext) status() {
 	}
 
 	hits := status.Cache.Hits
-	misses := status.Cache.Hits
+	misses := status.Cache.Misses
 	cacheHitRatio := 0.0
 	if hits + misses != 0 {
 		cacheHitRatio = float64(hits)/float64(hits + misses) * 100
@@ -244,25 +244,35 @@ func (c *clientContext) unpin() {
 	c.simple("unpin/" + repo, "unpin repo " + repo)
 }
 
+func chopSHPrefix(str string) string {
+	if strings.HasPrefix(str, "~/") {
+		return str[len("~/"):]
+	}
+	if strings.HasPrefix(str, "/~/") {
+		return str[len("/~/"):]
+	}
+	return str
+}
+
 func (c *clientContext) create() {
-	repo := flag.Args()[0]
+	repo := chopSHPrefix(flag.Args()[0])
 
 	c.simpleSH("create/" + repo, "create repo " + repo)
 }
 
 func (c *clientContext) delete() {
-	repo := flag.Args()[0]
+	repo := chopSHPrefix(flag.Args()[0])
 
 	c.simpleSH("delete/" + repo, "delete repo " + repo)
 }
 func (c *clientContext) hide() {
-	repo := flag.Args()[0]
+	repo := chopSHPrefix(flag.Args()[0])
 
 	c.simpleSH("hide/" + repo, "hide repo " + repo)
 }
 
 func (c *clientContext) unhide() {
-	repo := flag.Args()[0]
+	repo := chopSHPrefix(flag.Args()[0])
 
 	c.simpleSH("unhide/" + repo, "unhide repo " + repo)
 }

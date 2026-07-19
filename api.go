@@ -102,7 +102,7 @@ func (h *handler) apiStatus(w http.ResponseWriter) {
 }
 
 func (h *handler) apiEffectiveConfig(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/json; charset=utf-8")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 
 	ec := jsonableEffectiveConfig{Status:"success"}
 
@@ -136,7 +136,7 @@ func (h *handler) apiFetchHttp(w http.ResponseWriter, repo string) {
 }
 
 func (h *handler) apiSimpleTr(w http.ResponseWriter, f func(*log.Logger) bool) {
-	w.Header().Set("Content-Type", "text/json; charset=utf-8")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 
 	op := jsonableOperation{Status:"success"}
 	tr := &bytes.Buffer{}
@@ -286,7 +286,35 @@ func (h *handler) api(w http.ResponseWriter, req *http.Request) {
 	h.serve400(w)
 }
 
+func (h *handler) checkAllowPush(w http.ResponseWriter) bool {
+	if h.allowPush {
+		return true
+	}
+	op := jsonableOperation {
+		Status: "Push is disabled",
+		Transcript: "Pushing, creating, and deleting self-hosted repos is disabled",
+	}
+
+	marsh, err := json.Marshal(op)
+
+	if err != nil {
+		w.WriteHeader(500)
+		marsh = []byte(jsonFailure("Could not marshal response into JSON", op.Status))
+	} else {
+		w.WriteHeader(400)
+	}
+
+	w.Write(marsh)
+
+	return false
+}
+
 func (h *handler) apiSHCreate(w http.ResponseWriter, repo string) {
+
+	if !h.checkAllowPush(w) {
+		return
+	}
+
 	h.apiSimpleTr(w, func (logg *log.Logger) bool {
 		repo = "/~" + repo
 
@@ -300,6 +328,11 @@ func (h *handler) apiSHCreate(w http.ResponseWriter, repo string) {
 }
 
 func (h *handler) apiSHDelete(w http.ResponseWriter, repo string) {
+
+	if !h.checkAllowPush(w) {
+		return
+	}
+
 	h.apiSimpleTr(w, func (logg *log.Logger) bool {
 		repo = "/~" + repo
 		logg.Printf("Removing %s...", repo)
@@ -319,6 +352,10 @@ func (h *handler) apiSHDelete(w http.ResponseWriter, repo string) {
 }
 
 func (h *handler) apiSHHide(w http.ResponseWriter, repo string) {
+
+	// Note that we don't call checkAllowPush() here, because even if pushes are
+	// disabled, the users should still be able to hide/unhide their repos
+
 	h.apiSimpleTr(w, func (logg *log.Logger) bool {
 		repo = "/~" + repo
 		return h.hideRepo(repo, logg)
@@ -326,6 +363,10 @@ func (h *handler) apiSHHide(w http.ResponseWriter, repo string) {
 }
 
 func (h *handler) apiSHUnhide(w http.ResponseWriter, repo string) {
+
+	// Note that we don't call checkAllowPush() here, because even if pushes are
+	// disabled, the users should still be able to hide/unhide their repos
+
 	h.apiSimpleTr(w, func (logg *log.Logger) bool {
 		repo = "/~" + repo
 		return h.unhideRepo(repo, logg)
@@ -334,12 +375,12 @@ func (h *handler) apiSHUnhide(w http.ResponseWriter, repo string) {
 
 func (h *handler) apiSelfHosted(w http.ResponseWriter, req *http.Request) {
 	if strings.HasPrefix(req.URL.Path, "/+/create/") {
-		h.apiSHCreate(w, req.URL.Path[len("/-/create"):])
+		h.apiSHCreate(w, req.URL.Path[len("/+/create"):])
 		return
 	}
 
 	if strings.HasPrefix(req.URL.Path, "/+/delete/") {
-		h.apiSHDelete(w, req.URL.Path[len("/-/delete"):])
+		h.apiSHDelete(w, req.URL.Path[len("/+/delete"):])
 		return
 	}
 

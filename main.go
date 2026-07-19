@@ -42,6 +42,7 @@ type handler struct {
 	effectiveConfig *Config
 	maxDiskUsage int64
 	diskUsagePolicy string
+	allowPush bool
 
 	totalRequests, cacheMisses, cacheHits atomic.Uint64
 }
@@ -458,24 +459,37 @@ func stringToAuthLevel(s string) int {
 	}
 }
 
-func (h *handler) requireAuth(w http.ResponseWriter, req *http.Request, authLevel int) (string, int, bool) {
+func (h *handler) requireAuth(req *http.Request, authLevel int) (string, int, bool) {
 	if h.auth == "none" {
 		return "", authLevelNone, true
 	}
 
 	id, token, ok := req.BasicAuth()
 	if !ok {
-		h.serve401(w)
 		return id, authLevelNone, false
 	}
 
 	level, ok := h.validateCredentials(id, token, authLevel) 
 	if !ok {
-		h.serve401(w)
 		return id, authLevelNone, false
 	}
 
 	return id, level, true
+}
+
+func (h *handler) updateRepoSize(repo string) {
+	size, err := dirSize(h.root + repo)
+
+	if err != nil {
+		log.Printf("Could not calculate size of %s: %v", repo, err)
+	}
+
+	path := h.root + repo
+	h.reposLock.Lock()
+	r := h.repos[path]
+	r.size = size
+	h.repos[path] = r
+	h.reposLock.Unlock()
 }
 
 func (h *handler) handlePush(w http.ResponseWriter, req *http.Request) {
@@ -487,16 +501,17 @@ func (h *handler) handlePush(w http.ResponseWriter, req *http.Request) {
 	owner, repoName := parseSelfHosted(req.URL.Path)
 
 	// Auth required, obviously
-	who, level, ok := h.requireAuth(w, req, authLevelPush)
+	who, level, ok := h.requireAuth(req, authLevelPush)
 	if !ok {
+		h.serve401(w)
 		log.Printf("Invalid auth: %s", who)
 		return
 	}
 
 	// You can only push to your own repo, unless you are an admin
 	if who != owner && level != authLevelAdmin {
-		log.Printf("%s tried to push into repo they don't own: %s/%s", who, owner, repoName)
 		h.serve400(w)
+		log.Printf("%s tried to push into repo they don't own: %s/%s", who, owner, repoName)
 		return
 	}
 
@@ -505,6 +520,7 @@ func (h *handler) handlePush(w http.ResponseWriter, req *http.Request) {
 	// Exists
 	if _, err := os.Stat(h.root + repo); err == nil {
 		h.git.ServeHTTP(w, req)
+		h.updateRepoSize(repo)
 		return
 	}
 
@@ -514,8 +530,23 @@ func (h *handler) handlePush(w http.ResponseWriter, req *http.Request) {
 		h.serve500(w)
 		return
 	}
+	
+	size, err := dirSize(h.root + repo)
+
+	if err != nil {
+		log.Printf("Could not calculate size of %s: %v", repo, err)
+	}
+
+	h.reposLock.Lock()
+	h.repos[h.root + repo] = repoDescription {
+		repo: repo,
+		selfHosted: true,
+		size: size,
+	}
+	h.reposLock.Unlock()
 
 	h.git.ServeHTTP(w, req)
+	h.updateRepoSize(repo)
 }
 
 func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc string) {
@@ -531,13 +562,14 @@ func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc strin
 		}
 
 		// Authenticate
-		who, level, ok := h.requireAuth(w, req, authLevelFetch)
+		who, level, ok := h.requireAuth(req, authLevelFetch)
 		if !ok {
+			h.serve401(w)
 			return
 		}
 
 		// For a self-hosted repo, we create it if we have the permissions
-		if selfHosted(repo) {
+		if h.allowPush && selfHosted(repo) && level >= authLevelPush {
 			owner, repoName := parseSelfHosted(req.URL.Path)
 
 			// You can only push to your own repo, unless you are an admin
@@ -552,6 +584,20 @@ func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc strin
 				h.serve500(w)
 				return
 			}
+
+			size, err := dirSize(h.root + repo)
+
+			if err != nil {
+				log.Printf("Could not calculate size of %s: %v", repo, err)
+			}
+
+			h.reposLock.Lock()
+			h.repos[h.root + repo] = repoDescription {
+				repo: repo,
+				selfHosted: true,
+				size: size,
+			}
+			h.reposLock.Unlock()
 
 			h.git.ServeHTTP(w, req)
 
@@ -592,19 +638,18 @@ func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc strin
 
 }
 
-func (h *handler) requireSHAuth(w http.ResponseWriter, req *http.Request) (string, string, bool) {
+func (h *handler) requireSHAuth(req *http.Request) (string, string, bool) {
 	owner, repoName := parseSelfHosted(req.URL.Path)
 
 	// Invalid syntax
 	if owner == "" || repoName == "" {
-		h.serve400(w)
 		return "", "", false
 	}
 
 	repo := owner + "/" + repoName
 
 	// Auth required, obviously
-	who, level, ok := h.requireAuth(w, req, authLevelPush)
+	who, level, ok := h.requireAuth(req, authLevelPush)
 	if !ok {
 		log.Printf("Invalid SH auth: %s", who)
 		return who, repo, false
@@ -627,7 +672,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// Auth
 	if h.auth == "all" {
-		if _, _, ok := h.requireAuth(w, req, authLevelFetch); !ok {
+		if _, _, ok := h.requireAuth(req, authLevelFetch); !ok {
+			h.serve401(w)
 			log.Printf("Invalid auth")
 			return
 		}
@@ -641,8 +687,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// Admin remote control panel API
 	if req.Method == "GET" && strings.HasPrefix(req.URL.Path, "/-/") {
-		who, _, ok := h.requireAuth(w, req, authLevelAdmin)
+		who, _, ok := h.requireAuth(req, authLevelAdmin)
 		if !ok {
+			h.serve401(w)
 			log.Printf("Invalid auth: %s", who)
 			return
 		}
@@ -659,16 +706,26 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Self-hosted repo control panel API
 	if req.Method == "GET" && strings.HasPrefix(req.URL.Path, "/+/") {
 
-		who, level, ok := h.requireAuth(w, req, authLevelAdmin)
+		who, level, ok := h.requireAuth(req, authLevelPush)
 		if !ok {
+			h.serve401(w)
 			log.Printf("Invalid auth: %s", who)
 			return
 		}
 
-		owner, name := parseSelfHosted(req.URL.Path[len("/+/"):])
+		_, repo, ok := strings.Cut(req.URL.Path[len("/+/"):], "/")
+
+		if !ok {
+			log.Printf("Invalid path for GET /+/: '%s'", req.URL.Path)
+			h.serve400(w)
+			return
+		}
+
+		owner, name := parseSelfHosted("/~/" + repo)
 
 		if who != owner && level != authLevelAdmin {
-			log.Printf("%s tried to access api for controlling self-hosted %s/%s", who, owner, name)
+			log.Printf("%s tried to access api for controlling self-hosted %s/%s (they don't own it)", who, owner, name)
+			h.serve404(w)
 			return
 		}
 
@@ -689,9 +746,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		// Hidden repos can only be seen by their owner and admin
 		if h.hiddenRepoPath(req.URL.Path, log.Default()) {
-			if who, repo, ok := h.requireSHAuth(w, req); !ok {
-				log.Printf("%s tried to fetch a hidden repo they don't own: %s", who, repo)
+			if who, repo, ok := h.requireSHAuth(req); !ok {
 				h.serve404(w)
+				log.Printf("%s tried to fetch a hidden repo they don't own: %s", who, repo)
 				return
 			}
 		}
@@ -707,7 +764,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Push. Only allowed for self-hosted repos
-	if req.Method == "POST" && hasPostfix(req.URL.Path, "/git-receive-pack") {
+	if h.allowPush && req.Method == "POST" && hasPostfix(req.URL.Path, "/git-receive-pack") {
 		h.handlePush(w, req)
 		return
 	}
@@ -917,6 +974,8 @@ type Config struct {
 	Listen string
 
 	Auth string
+
+	Push bool
 
 	Timeouts struct {
 		Git struct {
@@ -1152,7 +1211,6 @@ func main() {
 	config.Timeouts.Refresh.Max = 20 * 24 * Hour
 	config.Timeouts.Refresh.Jitter.Min = 20 * Minute
 	config.Timeouts.Refresh.Jitter.Max = 70 * Minute
-	config.Disk.Max = "10G"
 
 	if err := yaml.Unmarshal(configData, &config); err != nil {
 		log.Fatalf("Could not read YAML: %v", err)
@@ -1242,6 +1300,7 @@ func main() {
 		maxJitter: config.Timeouts.Refresh.Jitter.Max.D(),
 		diskUsagePolicy: config.Disk.Policy,
 		maxDiskUsage: parseDiskSize(config.Disk.Max),
+		allowPush: config.Push,
 		git: &cgi.Handler {
 			Path: backend,
 			Dir: root,

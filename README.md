@@ -4,6 +4,11 @@ A single-binary git server that is two things at once: a caching pull-through
 mirror for upstream repositories, and optionally a lightweight host for your own
 repositories.
 
+Lorebox is designed to be easy to use and set up. The only thing that you need
+to set up the server is the lorebox binary, one config file, one directory for storing
+repos, and a service description (for systemd/runit/s6/etc). The defaults are
+sane.
+
 As a mirror, point your `git clone` at your box instead of the upstream host and
 lorebox transparently mirrors the repo on first access, serves it over git's
 HTTP protocols, and keeps it fresh in the background. It is a personal cache/archive
@@ -50,13 +55,13 @@ The same binary is also the remote-control client and a git credential helper.
   API for repo owners (`/+/...`), each with matching CLI verbs.
 - HTTPS: built-in TLS with certificate hot-reload on `SIGHUP`, or run it plain
   behind your existing reverse proxy.
-- Browsable: cached repos are listed at `/repos.txt` and browsable as a plain
-  directory index in any web browser.
+- Browsable: all cached & unhidden (public) repos are listed at `/repos.txt` and
+  browsable as a plain directory index in any web browser.
 
-## Building
+## Building & requirements
 
-Requires Go and a `git` binary in the server's `PATH` (lorebox shells out to git
-and uses `git-http-backend` for smart HTTP).
+Building requries Go; Running requires a `git` binary in the server's `PATH`
+(lorebox shells out to git and uses `git-http-backend` for smart HTTP).
 
 ```sh
 go build
@@ -122,7 +127,7 @@ Or set up lorebox as a git credential helper so plain URLs work:
    lorebox register
    ```
 
-3. You are good to go~
+3. You are good to go!
    ```sh
    git clone https://box.example.net/github.com/alice/project
    ```
@@ -160,9 +165,12 @@ lorebox delete alice/project   # delete it
 ```
 
 `create`, `delete`, and pushing require `push: true` on the server; `hide` and
-`unhide` work regardless. Self-hosted repos are treated as original content:
-they are never background-refreshed and never evicted by the disk budget (an
-admin can still remove one with `delete`).
+`unhide` work regardless, since users should be able to hide/unhide their repos even
+after destructive (constructive) actions were disabled. Notice that if `push`
+was never set to `true` in the first place, `hide` and `unhide` don't have
+effect. Self-hosted repos are treated as original content. They are never
+background-refreshed and never evicted by the disk budget (an admin can still remove
+one with `delete`).
 
 ## Remote control
 

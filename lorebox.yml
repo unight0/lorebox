@@ -58,10 +58,9 @@ disk:
 # * "admin" users can also use api for remote control of the box, control
 #   anyone's self-hosted repos
 tokens:
-  - id: "admin"
-    hash: "7Kkm-owmxvCmrKE4U6OzSEuPhhyIMzNtvYWkS8yfJjo"
+  - id: "bob"
+    hash: "X5QT5_TQ1I6rOg2zbESyoUgjrk8bGMy4jJcYz9ISyPWS9kGLWDHPQIoweFvGeazAsw1yKHoddYcKss70HYOY0w"
     level: "admin"
-
 
 # Enable pushing, creating and deleting self-hosted repositories
 # Default is false

@@ -24,7 +24,8 @@ import (
 	"sync/atomic"
 	"encoding/base64"
 	"go.yaml.in/yaml/v4"
-	"crypto/sha256"
+	"crypto/sha512"
+	"crypto/subtle"
 	sn "golang.org/x/sync/singleflight"
 	cr "crypto/rand"
 	_ "embed"
@@ -97,16 +98,16 @@ func (h *handler) refreshDefaultBranch(path Path, logg *log.Logger) bool {
 	return true
 }
 
-func (h *handler) getRepos() map[Path]repoDescription {
-	h.reposLock.RLock()
-	defer h.reposLock.RUnlock()
-
-	repos := make(map[Path]repoDescription)
-
-	maps.Copy(repos, h.repos)
-
-	return repos
-}
+//func (h *handler) getRepos() map[Path]repoDescription {
+//	h.reposLock.RLock()
+//	defer h.reposLock.RUnlock()
+//
+//	repos := make(map[Path]repoDescription)
+//
+//	maps.Copy(repos, h.repos)
+//
+//	return repos
+//}
 
 func (h *handler) refreshRepo(path Path, logg *log.Logger) bool {
 	repo := path.RepoPath(h)
@@ -425,7 +426,7 @@ func (h *handler) fetchRepo(repo RepoPath, logg *log.Logger, scheme string) bool
 func (h *handler) validateCredentials(id, token string, requiredAuthLevel int) (int, bool) {
 	log.Printf("Validating '%s'", id)
 
-	hash := sha256.Sum256([]byte(id + token))
+	hash := sha512.Sum512([]byte(id + "|" + token))
 	enHash := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	servToken, ok := h.tokens[id]
@@ -435,7 +436,7 @@ func (h *handler) validateCredentials(id, token string, requiredAuthLevel int) (
 		return authLevelNone, false
 	}
 
-	if enHash != servToken.hash {
+	if subtle.ConstantTimeCompare([]byte(enHash), []byte(servToken.hash)) == 0 {
 		log.Printf("Hash doesn't match: '%s'", id)
 		return authLevelNone, false
 	}
@@ -1015,7 +1016,7 @@ func generateCredentials(username string) {
 	enToken := base64.RawURLEncoding.EncodeToString(token)
 
 	// No need for salt, token is already completely random
-	hash := sha256.Sum256([]byte(username + enToken))
+	hash := sha512.Sum512([]byte(username + ":" + enToken))
 	enHash := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	fmt.Printf("# Successfully generated token credentials\n")
@@ -1250,9 +1251,12 @@ func main() {
 		log.Fatal(err)
 	}
 
+	if err := os.MkdirAll(root.S(), 0700); err != nil {
+		log.Fatal(err)
+	}
+
 	// Used by fullSelfID()
 	loreboxName = config.Name
-
 
 	html400 = processStaticPage(html400, cssStyle)
 	html401 = processStaticPage(html401, cssStyle)

@@ -4,3 +4,5 @@ docroot
 *.pem
 test/*
 test
+claude/*
+claude

@@ -1,0 +1,12 @@
+.git/*
+.git
+lorebox
+docroot/*
+docroot
+makecert.sh
+*.pem
+test/*
+test
+.claude/*
+.claude
+README.md

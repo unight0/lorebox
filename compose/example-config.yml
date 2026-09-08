@@ -3,20 +3,16 @@
 
 # Root directory for storing repositories
 # Please use an absolute path here for predictability purposes
-root: "docroot"
+root: "/lorebox"
 
 # The name of your box. Can be anything. You can put your domain in here, e.g.
 # name: "box.bob.net"
-name: "unnamed"
+name: "i-didnt-edit-example-config"
 
-# Listen for incoming connections at host:port. No host/0.0.0.0 for any source
-# address, 127.0.0.1 or [::1] for loopback-only
-# Default port is 8080 for demonstration purposes. I advise either:
-# a) Run lorebox on a bare chosen unique port, enable HTTPS
-# b) If 443 is not taken, run lorebox there, enable HTTPS
-# c) Route through your HTTPS server running at 443 + use a subdomain like
-# box.bob.me. Disable HTTPS, lorebox never has to touch TLS certificates
-listen: "127.0.0.1:8080"
+# Listen for incoming connections at :8081. This port is behind reverse
+# proxy of Caddy. Notice that :8081 is not published by docker-compose, hence is
+# only accessible for Caddy
+listen: ":8081"
 
 # Options:
 # all -- need auth for any action
@@ -64,23 +60,13 @@ tokens:
 
 # Enable pushing, creating and deleting self-hosted repositories
 # Default is false
-push: true
+push: false
 
+# We sit behind Caddy, so no need to do this
+#
 # Certificate and key to use for HTTPS. Obtain them from a provider like
 # Letsencrypt, etc. Please use absolute paths here for predictable behaviour
 # independent from the location you run the binary from
 # https:
 #  certificate: "cert.pem"
 #  key: "key.pem"
-
-# Ignore, just an idea
-## Scout mode. Creates colophons of all pulled commits and keeps them in a
-## disconnected signed commit tree. This tree is ignored by regular clients,
-## but possible downstream loreboxes will fetch them, too. A colophon is a
-## statement: "I saw commit C in repo R at time T"
-## Use absolute paths here, too.
-#scout:
-#  # SSH signing key; generate with: ssh-keygen -t ed25519 -f scout_key -N ""
-#  # Must be 0600. The public half is served at /.well-known/lorebox/key.pub
-#  key: "scoutkey"
-#  pubkey: "scoutkey.pub"

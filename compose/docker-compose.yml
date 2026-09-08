@@ -1,0 +1,56 @@
+name: lorebox-caddy
+
+services:
+  lorebox:
+    image: lorebox
+    container_name: lrbc-lorebox
+    restart: unless-stopped
+    build: ..
+    mem_limit: 256m
+    healthcheck:
+      # This is a very rough check that the server is up and running
+      # The example-config.yml configures port 8081
+      test: ["CMD", "nc", "-z", "localhost", "8081"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - ./example-config.yml:/lorebox.yml:ro
+      - lorebox_data:/lorebox
+
+  caddy:
+    image: caddy:2.11
+    container_name: lrbc-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - ./logs:/var/log/caddy
+    mem_limit: 512m
+    pids_limit: 256
+    cap_drop:
+      - ALL
+    cap_add:
+      # Bind :80 and :443 as a non-root-capable process.
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # Same as above
+      test: ["CMD", "nc", "-z", "localhost", "2027"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  caddy_data:
+  caddy_config:
+  lorebox_data:

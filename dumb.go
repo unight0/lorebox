@@ -19,7 +19,7 @@ func (h *handler) serveDir(w http.ResponseWriter, rpath RepoPath) {
 
 	if err != nil {
 		log.Printf("error at os.ReadDir(): %v", err)
-		h.serve500(w)
+		serve500(w)
 		return
 	}
 
@@ -88,7 +88,7 @@ func (h *handler) serveDir(w http.ResponseWriter, rpath RepoPath) {
 		if h.excludedPath(rpath.Path(h).Concat(e.Name())) {
 			continue
 		}
-		log.Printf("Not an excluded path: %s", rpath.Path(h).Concat(e.Name()))
+		//log.Printf("Not an excluded path: %s", rpath.Path(h).Concat(e.Name()))
 		if h.hiddenRepoPath(rpath.Concat(e.Name()), log.Default()) {
 			continue
 		}
@@ -207,11 +207,11 @@ func (h *handler) serveFile(w http.ResponseWriter, rpath RepoPath) {
 		log.Printf("error at os.Open(): %v", err)
 
 		if errors.Is(err, os.ErrNotExist) {
-			h.serve404(w)
+			serve404(w)
 			return
 		}
 
-		h.serve500(w)
+		serve500(w)
 		return
 	}
 	defer file.Close()
@@ -227,7 +227,7 @@ func (h *handler) serveFile(w http.ResponseWriter, rpath RepoPath) {
 
 	if err != nil {
 		log.Printf("error at io.Copy(): %v", err)
-		h.serve500(w)
+		serve500(w)
 		return
 	}
 }
@@ -239,26 +239,26 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 
 	if err != nil {
 		log.Printf("rpath.Path(h).expand(): %v", err)
-		h.serve500(w)
+		serve500(w)
 		return
 	}
 
 	if h.excludedPath(path) {
 		log.Printf("Excluded repo path access: %s\n", rpath)
-		h.serve404(w)
+		serve404(w)
 		return
 	}
 
 	if h.hiddenRepoPath(rpath, log.Default()) {
 		log.Printf("Hidden repo path access: %s\n", rpath)
-		h.serve404(w)
+		serve404(w)
 		return
 	}
 
 	// Outside of the root directory
 	if !strings.HasPrefix(path.S() + "/", h.root.S() + "/") {
 		log.Printf("External path '%s' was requested", path)
-		h.serve400(w)
+		serve400(w)
 		return
 	}
 
@@ -267,12 +267,12 @@ func (h *handler) serveFS(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			fmt.Printf("Can't stat '%s': %v", path, err)
-			h.serve500(w)
+			serve500(w)
 			return
 		}
 
 		log.Printf("'%s' doesn't exist", rpath)
-		h.serve404(w)
+		serve404(w)
 		return
 	}
 

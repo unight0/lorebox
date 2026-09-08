@@ -1,0 +1,10 @@
+
+# Change to mywebsite.com or similar
+:80 {
+    reverse_proxy lrbc-lorebox:8081
+}
+
+# This is for the healthcheck. Does not get published
+:2027 {
+    respond /healthz "ok" 200
+}

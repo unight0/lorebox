@@ -501,7 +501,7 @@ func (h *handler) handlePush(w http.ResponseWriter, req *http.Request) {
 	fullrpath := NewRepoPath(req.URL.Path)	
 
 	if !selfHosted(fullrpath) {
-		h.serve400(w)
+		serve400(w)
 		return
 	}
 
@@ -510,14 +510,14 @@ func (h *handler) handlePush(w http.ResponseWriter, req *http.Request) {
 	// Auth required, obviously
 	who, level, ok := h.requireAuth(req, authLevelPush)
 	if !ok {
-		h.serve401(w)
+		serve401(w)
 		log.Printf("Invalid auth: %s", who)
 		return
 	}
 
 	// You can only push to your own repo, unless you are an admin
 	if who != owner && level != authLevelAdmin {
-		h.serve400(w)
+		serve400(w)
 		log.Printf("%s tried to push into repo they don't own: %s/%s", who, owner, repoName)
 		return
 	}
@@ -535,7 +535,7 @@ func (h *handler) handlePush(w http.ResponseWriter, req *http.Request) {
 	// Doesn't exist, so create
 	if !h.gitInit(path, log.Default()) {
 		log.Printf("Couldn't init %s", repo)
-		h.serve500(w)
+		serve500(w)
 		return
 	}
 	
@@ -566,14 +566,14 @@ func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc strin
 	if _, err := os.Stat(path.S()); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			fmt.Printf("Can't stat '%s': %v", repo, err)
-			h.serve500(w)
+			serve500(w)
 			return
 		}
 
 		// Authenticate
 		who, level, ok := h.requireAuth(req, authLevelFetch)
 		if !ok {
-			h.serve401(w)
+			serve401(w)
 			return
 		}
 
@@ -584,13 +584,13 @@ func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc strin
 			// You can only push to your own repo, unless you are an admin
 			if who != owner && level != authLevelAdmin {
 				log.Printf("%s tried to push-create into repo they don't own: %s/%s", who, owner, repoName)
-				h.serve400(w)
+				serve400(w)
 				return
 			}
 
 			if !h.gitInit(path, log.Default()) {
 				log.Printf("Couldn't init %s: %v", repo, err)
-				h.serve500(w)
+				serve500(w)
 				return
 			}
 
@@ -617,7 +617,7 @@ func (h *handler) handlePull(w http.ResponseWriter, req *http.Request, svc strin
 		log.Printf("Running pullthrough on '%s'", repo)
 		
 		if !h.fetchRepo(repo, log.Default(), "https") {
-			h.serve404(w)
+			serve404(w)
 			return
 		}
 		h.cacheMisses.Add(1)
@@ -673,38 +673,38 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	svc := req.URL.Query().Get("service")
 
 	// Always has to be available
-	if req.Method == "GET" && req.URL.Path == "/robots.txt" {
-		h.serveRobots(w)
+	if (req.Method == "GET" || req.Method == "HEAD") && req.URL.Path == "/robots.txt" {
+		serveRobots(w)
 		return
 	}
 
 	// Auth
 	if h.auth == "all" {
 		if _, _, ok := h.requireAuth(req, authLevelFetch); !ok {
-			h.serve401(w)
+			serve401(w)
 			log.Printf("Invalid auth")
 			return
 		}
 	}
 
 	// Inject repo index
-	if req.Method == "GET" && req.URL.Path == "/repos.txt" {
+	if (req.Method == "GET" || req.Method == "HEAD") && req.URL.Path == "/repos.txt" {
 		h.serveRepoIndex(w)
 		return
 	}
 
 	// Admin remote control panel API
-	if req.Method == "GET" && strings.HasPrefix(req.URL.Path, "/-/") {
+	if (req.Method == "GET" || req.Method == "HEAD") && strings.HasPrefix(req.URL.Path, "/-/") {
 		who, _, ok := h.requireAuth(req, authLevelAdmin)
 		if !ok {
-			h.serve401(w)
+			serve401(w)
 			log.Printf("Invalid auth: %s", who)
 			return
 		}
 		// Prevent cross-site nastiness
 		if req.Header.Get("X-Lorebox-Api") != "On" {
 			log.Printf("Valid auth, but no X-Lorebox-Api header: %s", who)
-			h.serve400(w)
+			serve400(w)
 			return
 		}
 		h.api(w, req)
@@ -712,11 +712,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Self-hosted repo control panel API
-	if req.Method == "GET" && strings.HasPrefix(req.URL.Path, "/+/") {
+	if (req.Method == "GET" || req.Method == "HEAD") && strings.HasPrefix(req.URL.Path, "/+/") {
 
 		who, level, ok := h.requireAuth(req, authLevelPush)
 		if !ok {
-			h.serve401(w)
+			serve401(w)
 			log.Printf("Invalid auth: %s", who)
 			return
 		}
@@ -725,7 +725,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		if !ok {
 			log.Printf("Invalid path for GET /+/: '%s'", req.URL.Path)
-			h.serve400(w)
+			serve400(w)
 			return
 		}
 
@@ -733,14 +733,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		if who != owner && level != authLevelAdmin {
 			log.Printf("%s tried to access api for controlling self-hosted %s/%s (they don't own it)", who, owner, name)
-			h.serve404(w)
+			serve404(w)
 			return
 		}
 
 		// Prevent cross-site nastiness
 		if req.Header.Get("X-Lorebox-Api") != "On" {
 			log.Printf("Valid auth, but no X-Lorebox-Api header: %s", who)
-			h.serve400(w)
+			serve400(w)
 			return
 		}
 		h.apiSelfHosted(w, req)
@@ -750,18 +750,26 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Smart ref advertisement
 	// Request for .../info/refs, a start of the git repo transmission. Either
 	// pull (if not available) or just serve
+	// Note: HEAD is not allowed here, because we do not want to trigger a
+	// pullthrough on HEAD...
 	if req.Method == "GET" && hasPostfix(req.URL.Path, infoRefs) {
 
 		// Hidden repos can only be seen by their owner and admin
 		if h.hiddenRepoPath(NewRepoPath(req.URL.Path), log.Default()) {
 			if who, repo, ok := h.requireSHAuth(req); !ok {
-				h.serve404(w)
+				serve404(w)
 				log.Printf("%s tried to fetch a hidden repo they don't own: %s", who, repo)
 				return
 			}
 		}
 
 		h.handlePull(w, req, svc)
+		return
+	}
+
+	// HEAD is not allowed here
+	if req.Method == "HEAD" && hasPostfix(req.URL.Path, infoRefs) {
+		serve405NoHead(w);
 		return
 	}
 	
@@ -779,17 +787,17 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// Unknown service. Maybe remove this check?
 	if svc != "" {
-		h.serve400(w)
+		serve400(w)
 		return
 	}
 
 	// Dumb client
-	if req.Method == "GET" {
+	if req.Method == "GET" || req.Method == "HEAD" {
 		h.serveFS(w, req)	
 		return
 	}
 
-	h.serve400(w)
+	serve405(w)
 }
 
 func (h *handler) walkRepos() {
@@ -1261,6 +1269,7 @@ func main() {
 	html400 = processStaticPage(html400, cssStyle)
 	html401 = processStaticPage(html401, cssStyle)
 	html404 = processStaticPage(html404, cssStyle)
+	html405 = processStaticPage(html405, cssStyle)
 	html500 = processStaticPage(html500, cssStyle)
 	
 	ctx, cancel := context.WithTimeout(context.Background(), config.Timeouts.Git.Regular.D())

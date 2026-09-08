@@ -282,7 +282,7 @@ func (h *handler) api(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Invalid API endpoint
-	h.serve400(w)
+	serve400(w)
 }
 
 func (h *handler) checkAllowPush(w http.ResponseWriter) bool {
@@ -394,5 +394,5 @@ func (h *handler) apiSelfHosted(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Invalid API endpoint
-	h.serve400(w)
+	serve400(w)
 }

@@ -15,6 +15,8 @@ var html400 []byte
 var html401 []byte
 //go:embed static/404.html
 var html404 []byte
+//go:embed static/405.html
+var html405 []byte
 //go:embed static/500.html
 var html500 []byte
 //go:embed static/robots.txt
@@ -26,65 +28,53 @@ var htmlGenericEnd []byte
 //go:embed static/style.css
 var cssStyle string
 
-// Doesn't exist
-func (h *handler) serve404(w http.ResponseWriter) {
+func genericPage(code int, page []byte, w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(404)
+	w.WriteHeader(code)
 
-	_, err := w.Write(html404)
+	_, err := w.Write(page)
 
 	if err != nil {
-		log.Printf("404 write: %v", err)
+		log.Printf("%d write: %v", code, err)
 	}
+}
+
+// Doesn't exist
+func serve404(w http.ResponseWriter) {
+	genericPage(404, html404, w);
+}
+
+// Method not allowed
+func serve405(w http.ResponseWriter) {
+	w.Header().Set("Allow", "GET, POST, HEAD")
+	genericPage(405, html405, w);
+}
+
+// Only GET and POST are allowed
+func serve405NoHead(w http.ResponseWriter) {
+	w.Header().Set("Allow", "GET, POST")
+	genericPage(405, html405, w);
 }
 
 // Client error; invalid request
-func (h *handler) serve400(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(400)
-
-	_, err := w.Write(html400)
-
-	if err != nil {
-		log.Printf("400 write: %v", err)
-	}
+func serve400(w http.ResponseWriter) {
+	genericPage(400, html400, w);
 }
 
 // Authentication requred 
-func (h *handler) serve401(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+func serve401(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", "Basic realm=\"lorebox\"")
-	w.WriteHeader(401)
-
-	_, err := w.Write(html401)
-
-	if err != nil {
-		log.Printf("401 write: %v", err)
-	}
+	genericPage(401, html401, w);
 }
 
 // Internal server error
-func (h *handler) serve500(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(500)
-
-	_, err := w.Write(html500)
-
-	if err != nil {
-		log.Printf("500 write: %v", err)
-	}
+func serve500(w http.ResponseWriter) {
+	genericPage(500, html500, w);
 }
 
 // /robots.txt 
-func (h *handler) serveRobots(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
-
-	_, err := w.Write(robotstxt)
-
-	if err != nil {
-		log.Printf("robots.txt write: %v", err)
-	}
+func serveRobots(w http.ResponseWriter) {
+	genericPage(200, robotstxt, w);
 }
 
 // /repos.txt

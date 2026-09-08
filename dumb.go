@@ -88,6 +88,7 @@ func (h *handler) serveDir(w http.ResponseWriter, rpath RepoPath) {
 		if h.excludedPath(rpath.Path(h).Concat(e.Name())) {
 			continue
 		}
+		log.Printf("Not an excluded path: %s", rpath.Path(h).Concat(e.Name()))
 		if h.hiddenRepoPath(rpath.Concat(e.Name()), log.Default()) {
 			continue
 		}
@@ -170,7 +171,7 @@ func (h *handler) cacheablePath(path Path) bool {
 func (h *handler) excludedPath(path Path) bool {
 
 	// /.tmp dir should not be accessible
-	if strings.HasPrefix(path.S(), h.tmpDir().S() + "/") {
+	if strings.HasPrefix(path.S(), h.tmpDir().S()) {
 		return true
 	}
 

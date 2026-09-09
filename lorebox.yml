@@ -12,10 +12,11 @@ name: "unnamed"
 # Listen for incoming connections at host:port. No host/0.0.0.0 for any source
 # address, 127.0.0.1 or [::1] for loopback-only
 # Default port is 8080 for demonstration purposes. I advise either:
-# a) Run lorebox on a bare chosen unique port, enable HTTPS
+# a) Put lorebox behind your HTTP(S) server of choice. This allows much more
+# flexibility of setup. It also improves security. Check out the compose/
+# directory -- it uses Caddy for easy setup.
 # b) If 443 is not taken, run lorebox there, enable HTTPS
-# c) Route through your HTTPS server running at 443 + use a subdomain like
-# box.bob.me. Disable HTTPS, lorebox never has to touch TLS certificates
+# c) Run lorebox on a bare chosen unique port, enable HTTPS
 listen: "127.0.0.1:8080"
 
 # Options:

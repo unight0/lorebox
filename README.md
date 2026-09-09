@@ -71,6 +71,16 @@ or
 go install
 ```
 
+### Alternatively, use docker
+
+You can find the `Dockerfile` in the root source directory. It builds an image
+that has its config located in /lorebox.yml, and it stores its data (cached &
+hosted repos) in /lorebox.
+
+There's also the `compose/` directory that contains the docker-compose setup for
+easy start. It puts lorebox behind Caddy. You should edit `compose/Caddyfile` and
+`compose/lorebox.yml` to tailor it to your preferences before running the image.
+
 ## Quick start (server)
 
 1. Create a config. Start from the annotated [`lorebox.yml`](lorebox.yml) in this

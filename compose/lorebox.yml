@@ -1,5 +1,7 @@
-# lorebox.yml
-# The singular and only config file for lorebox server
+# ----------------------------------------------------------------------
+# This is a changed version of ../lorebox.yml. Please refer to that file
+# for full documentation on the configuration options.
+# ----------------------------------------------------------------------
 
 # Root directory for storing repositories
 # Please use an absolute path here for predictability purposes

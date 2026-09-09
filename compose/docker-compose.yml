@@ -8,14 +8,14 @@ services:
     build: ..
     mem_limit: 256m
     healthcheck:
-      # This is a very rough check that the server is up and running
+      # This is a very rough check to ensure the server is up and running
       # The example-config.yml configures port 8081
       test: ["CMD", "nc", "-z", "localhost", "8081"]
       interval: 30s
       timeout: 5s
       retries: 3
     volumes:
-      - ./example-config.yml:/lorebox.yml:ro
+      - ./lorebox.yml:/lorebox.yml:ro
       - lorebox_data:/lorebox
 
   caddy:
@@ -42,6 +42,7 @@ services:
       - no-new-privileges:true
     healthcheck:
       # Same as above
+      # :2027 is set in Caddyfile. It is not published
       test: ["CMD", "nc", "-z", "localhost", "2027"]
       interval: 30s
       timeout: 5s

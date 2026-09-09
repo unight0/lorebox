@@ -1,6 +1,18 @@
 
-# Change to mywebsite.com or similar
+
+# Some minor security options
+(sec) {
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}
+
+# Change to box.mywebsite.com or similar
 :80 {
+    import sec
     reverse_proxy lrbc-lorebox:8081
 }
 

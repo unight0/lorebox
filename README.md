@@ -6,10 +6,11 @@ A single-binary git server that is two things at once: a caching pull-through
 mirror for upstream repositories, and optionally a lightweight host for your own
 repositories.
 
-Lorebox is designed to be easy to use and set up. The only thing that you need
-to set up the server is the lorebox binary, one config file, one directory for storing
-repos, and a service description (for systemd/runit/s6/etc). The defaults are
-sane.
+Lorebox is designed to be easy to use and set up. The easiest way to set it up
+would be using docker-compose. Check `compose/` to see an example setup.
+If you do not want to use docker, then you only need the lorebox binary, one
+config file, one directory for storing repos, and a service description (for
+systemd/runit/s6/etc). The defaults are sane
 
 As a mirror, point your `git clone` at your box instead of the upstream host and
 lorebox transparently mirrors the repo on first access, serves it over git's

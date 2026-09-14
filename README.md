@@ -1,5 +1,7 @@
 # lorebox
 
+![lorebox demonstration](image1.png)
+
 A single-binary git server that is two things at once: a caching pull-through
 mirror for upstream repositories, and optionally a lightweight host for your own
 repositories.

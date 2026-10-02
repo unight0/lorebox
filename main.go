@@ -1136,6 +1136,152 @@ func credentialHelper() {
 	}
 }
 
+func defaultConfig() Config {
+	config := Config {
+		Root: ".",
+		Name: "unnamed",
+		Listen: ":8080",
+		Auth: "new",
+	}
+	config.Disk.Max = "10G"
+	config.Disk.Policy = "lru"
+	config.Timeouts.Git.Regular = 5 * Minute
+	config.Timeouts.Git.Clone = 30 * Minute
+	config.Timeouts.Refresh.Default = 12 * Hour
+	config.Timeouts.Refresh.Max = 20 * 24 * Hour
+	config.Timeouts.Refresh.Jitter.Min = 20 * Minute
+	config.Timeouts.Refresh.Jitter.Max = 70 * Minute
+
+	return config
+}
+
+func (config *Config) check() {
+	if config.Timeouts.Refresh.Jitter.Max < config.Timeouts.Refresh.Jitter.Min {
+		log.Fatal("Error: min jitter > max jitter")
+	}
+	if config.Timeouts.Refresh.Default > config.Timeouts.Refresh.Max {
+		log.Fatal("Error: default repo refresh time > max refresh time")
+	}
+	if config.Auth != "new" && config.Auth != "all" && config.Auth != "none" {
+		log.Fatal("Error: invalid authentication mode. Select new/all/none")
+	}
+	// XOR
+	if (config.Https.Certificate == "") != (config.Https.Key == "") {
+		log.Fatal("Error: specify _both_ the certificate and key to use HTTPS")
+	}
+	switch config.Disk.Policy {
+	case "lru", "deny", "warn":
+	default:
+		log.Fatal("disk:policy must be either 'lru', 'deny', or 'warn'")
+	}
+
+	maxDiskUsage, err := parseDiskSize(config.Disk.Max)
+	if err != nil {
+		log.Fatalf("Error: could not parse '%s': %v\n", config.Disk.Max, err)
+	}
+	if maxDiskUsage == 0 {
+		log.Fatal("disk:max may not be zero")
+	}
+	if maxDiskUsage <= 32 * 1024 {
+		log.Printf("Warning: disk:max set to less than 32K, that might be too little")
+	}
+}
+
+func (config *Config) load(configFile string) {
+	var configData []byte
+	var err error
+
+	if configFile != "" {
+		configData, err = os.ReadFile(configFile)
+		if err != nil {
+			log.Fatalf("Could not read config: %v", err)
+		}
+	}
+
+	if err := yaml.Unmarshal(configData, &config); err != nil {
+		log.Fatalf("Could not read YAML: %v", err)
+	}
+}
+
+// newHandler constructs a new handler from config, path to document root, and
+// path to the git backend. It will call log.Fatalf() if it fails to parse
+// config.Disk.Max
+func newHandler(config *Config, root, backend Path) *handler {
+	maxDisk, err := parseDiskSize(config.Disk.Max)
+	if err != nil {
+		log.Fatalf("Error: could not parse '%s': %v\n", config.Disk.Max, err)
+	}
+
+	h := &handler {
+		effectiveConfig: config,
+		root: root,
+		auth: config.Auth,
+		gitTimeout: config.Timeouts.Git.Regular.D(),	
+		gitCloneTimeout: config.Timeouts.Git.Clone.D(),
+		defaultRefresh: config.Timeouts.Refresh.Default.D(),
+		maxRefresh: config.Timeouts.Refresh.Max.D(),
+		minJitter: config.Timeouts.Refresh.Jitter.Min.D(),
+		maxJitter: config.Timeouts.Refresh.Jitter.Max.D(),
+		diskUsagePolicy: config.Disk.Policy,
+		maxDiskUsage: maxDisk,
+		allowPush: config.Push,
+		git: &cgi.Handler {
+			Path: backend.S(),
+			Dir: root.S(),
+			Env: []string {
+				"GIT_PROJECT_ROOT=" + root.S(),
+				"GIT_HTTP_EXPORT_ALL=1",
+			},
+		},
+	}
+
+	h.startup = time.Now()
+
+	return h
+}
+
+// processTokens read tokens from the config and populates the h.tokens
+// dictionary
+func (h *handler) processTokens() {
+	for _, t := range h.effectiveConfig.Tokens {
+		if t.Id == "" || t.Hash == "" {
+			log.Fatalf("For each token, id and hash must be set")
+		}
+
+		if t.Level == "" {
+			t.Level = "fetch"
+		}
+
+		level := stringToAuthLevel(t.Level)
+		// Invalid level
+		if level == authLevelNone {
+			log.Fatalf("For each token, level must be set to either 'fetch', 'push', or 'admin'")
+		}
+
+		h.tokens[t.Id] = tokenInfo {
+			t.Hash, level,
+		}
+	}
+
+}
+
+// launchRefresh launches h.refresher for each of the cached repos in h.repos.
+// Self-hosted repos will not be refreshed
+func (h *handler) launchRefresh() {
+	for r, d := range h.repos {
+		// Can't refresh self-hosted repos
+		if d.selfHosted {
+			continue
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		info := h.repos[r]
+		info.cancelRefresher = cancel
+		h.repos[r] = info
+		go h.refresher(ctx, r)
+	}
+}
+
 func main() {
 
 	if len(os.Args) < 2 {
@@ -1189,36 +1335,14 @@ func main() {
 
 	log.Printf("Starting lorebox " + loreboxVersion)
 
-	var configData []byte
-	var err error
+	config := defaultConfig()
 
 	if configFile != "" {
-		configData, err = os.ReadFile(configFile)
-		if err != nil {
-			log.Fatalf("Could not read config: %v", err)
-		}
+		config.load(configFile)
+		log.Println("Config read")
 	}
 
-	config := Config {
-		Root: ".",
-		Name: "unnamed",
-		Listen: ":8080",
-		Auth: "new",
-	}
-	config.Disk.Max = "10G"
-	config.Disk.Policy = "lru"
-	config.Timeouts.Git.Regular = 5 * Minute
-	config.Timeouts.Git.Clone = 30 * Minute
-	config.Timeouts.Refresh.Default = 12 * Hour
-	config.Timeouts.Refresh.Max = 20 * 24 * Hour
-	config.Timeouts.Refresh.Jitter.Min = 20 * Minute
-	config.Timeouts.Refresh.Jitter.Max = 70 * Minute
-
-	if err := yaml.Unmarshal(configData, &config); err != nil {
-		log.Fatalf("Could not read YAML: %v", err)
-	}
-	log.Printf("Config read")
-
+	// Override config values
 	if root != "" {
 		config.Root = root.S()
 	}
@@ -1226,34 +1350,9 @@ func main() {
 		config.Listen = listen
 	}
 
-	if config.Timeouts.Refresh.Jitter.Max < config.Timeouts.Refresh.Jitter.Min {
-		log.Fatal("Error: min jitter > max jitter")
-	}
-	if config.Timeouts.Refresh.Default > config.Timeouts.Refresh.Max {
-		log.Fatal("Error: default repo refresh time > max refresh time")
-	}
-	if config.Auth != "new" && config.Auth != "all" && config.Auth != "none" {
-		log.Fatal("Error: invalid authentication mode. Select new/all/none")
-	}
-	// XOR
-	if (config.Https.Certificate == "") != (config.Https.Key == "") {
-		log.Fatal("Error: specify _both_ the certificate and key to use HTTPS")
-	}
-	switch config.Disk.Policy {
-	case "lru", "deny", "warn":
-	default:
-		log.Fatal("disk:policy must be either 'lru', 'deny', or 'warn'")
-	}
+	config.check();
 
-	maxDiskUsage := parseDiskSize(config.Disk.Max)
-	if maxDiskUsage == 0 {
-		log.Fatal("disk:max may not be zero")
-	}
-	if maxDiskUsage <= 32 * 1024 {
-		log.Printf("Warning: disk:max set to less than 32K, that might be too little")
-	}
-
-	root, err = Path(config.Root).expand()
+	root, err := Path(config.Root).expand()
 
 	if err != nil {
 		log.Fatal(err)
@@ -1264,13 +1363,12 @@ func main() {
 	}
 
 	// Used by fullSelfID()
+	// Ugly global variable, but does not have a significant impact on anything,
+	// so fine for now (whatever 'now' is)
 	loreboxName = config.Name
 
-	html400 = processStaticPage(html400, cssStyle)
-	html401 = processStaticPage(html401, cssStyle)
-	html404 = processStaticPage(html404, cssStyle)
-	html405 = processStaticPage(html405, cssStyle)
-	html500 = processStaticPage(html500, cssStyle)
+	// Replace __LOREBOX_VERSION with fullSelfID()
+	processStaticPages()
 	
 	ctx, cancel := context.WithTimeout(context.Background(), config.Timeouts.Git.Regular.D())
 	defer cancel()
@@ -1280,32 +1378,9 @@ func main() {
 		log.Fatal(err)
 	}
 
-	backend := filepath.Join(strings.TrimSpace(string(gitdir)), "git-http-backend")
+	backend := NewPath(filepath.Join(strings.TrimSpace(string(gitdir)), "git-http-backend"))
 
-	h := &handler {
-		effectiveConfig: &config,
-		root: root,
-		auth: config.Auth,
-		gitTimeout: config.Timeouts.Git.Regular.D(),	
-		gitCloneTimeout: config.Timeouts.Git.Clone.D(),
-		defaultRefresh: config.Timeouts.Refresh.Default.D(),
-		maxRefresh: config.Timeouts.Refresh.Max.D(),
-		minJitter: config.Timeouts.Refresh.Jitter.Min.D(),
-		maxJitter: config.Timeouts.Refresh.Jitter.Max.D(),
-		diskUsagePolicy: config.Disk.Policy,
-		maxDiskUsage: parseDiskSize(config.Disk.Max),
-		allowPush: config.Push,
-		git: &cgi.Handler {
-			Path: backend,
-			Dir: root.S(),
-			Env: []string {
-				"GIT_PROJECT_ROOT=" + root.S(),
-				"GIT_HTTP_EXPORT_ALL=1",
-			},
-		},
-	}
-
-	h.startup = time.Now()
+	h := newHandler(&config, root, backend)
 
 	tmpDir := h.tmpDir()
 	// Wipe
@@ -1322,41 +1397,15 @@ func main() {
 
 	h.tokens = map[string]tokenInfo{}
 
-	for _, t := range config.Tokens {
-		if t.Id == "" || t.Hash == "" {
-			log.Fatalf("For each token, id and hash must be set")
-		}
-
-		if t.Level == "" {
-			t.Level = "fetch"
-		}
-
-		level := stringToAuthLevel(t.Level)
-		// Invalid level
-		if level == authLevelNone {
-			log.Fatalf("For each token, level must be set to either 'fetch', 'push', or 'admin'")
-		}
-
-		h.tokens[t.Id] = tokenInfo {
-			t.Hash, level,
-		}
-	}
+	// Read tokens from the config, check if they are correctly configured, then
+	// add them to the h.tokens
+	h.processTokens()
 
 	// Populates h.repos
 	h.walkRepos()
 
-	for r, d := range h.repos {
-		// Can't refresh self-hosted repos
-		if d.selfHosted {
-			continue
-		}
-
-		ctx, cancel := context.WithCancel(context.Background())
-		info := h.repos[r]
-		info.cancelRefresher = cancel
-		h.repos[r] = info
-		go h.refresher(ctx, r)
-	}
+	// Launch refresher goroutines to fetch cached repos periodically
+	h.launchRefresh()
 
 	serv := &http.Server {
 		Addr: config.Listen,

@@ -131,23 +131,9 @@ func (h *handler) serveDir(w http.ResponseWriter, rpath RepoPath) {
 	bw.Flush()
 }
 
-func (h *handler) intraRepoPath(path Path) (IRPath, bool) {
-	h.reposLock.RLock()
-	defer h.reposLock.RUnlock()
-
-	for p := range h.repos {
-		ps := p.S() + "/"
-		if strings.HasPrefix(path.S(), ps) {
-			return IRPath(path.S()[len(p):]), true
-		}
-	}
-
-	return IRPath(path.S()), false
-}
-
 func (h *handler) cacheablePath(path Path) bool {
 
-	ipath, ok := h.intraRepoPath(path)
+	ipath, ok := path.intraRepoPath(h)
 
 	if !ok {
 		return false
@@ -175,7 +161,7 @@ func (h *handler) excludedPath(path Path) bool {
 		return true
 	}
 
-	ipath, ok := h.intraRepoPath(path)
+	ipath, ok := path.intraRepoPath(h)
 
 	if !ok {
 		return false

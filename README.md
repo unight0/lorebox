@@ -6,8 +6,8 @@ A single-binary git server that is two things at once: a caching pull-through
 mirror for upstream repositories, and optionally a lightweight host for your own
 repositories.
 
-Lorebox is designed to be easy to use and set up. The easiest way to set it up
-would be using docker-compose. Check `compose/` to see an example setup.
+Lorebox is designed to be easy to use and set up. The easiest way would be using
+docker-compose. Check `compose/` to see an example.
 If you do not want to use docker, then you only need the lorebox binary, one
 config file, one directory for storing repos, and a service description (for
 systemd/runit/s6/etc). The defaults are sane
@@ -23,7 +23,7 @@ git clone https://box.example.net/github.com/alice/project    # via your lorebox
 ```
 
 The URL path encodes the upstream: `/<host>/<path>` is fetched from
-`https://<host>/<path>`. Anything already cached is served locally; anything new
+`https://<host>/<path>`. Anything already cached is served locally. Anything new
 is cloned on demand ("pullthrough") and cached.
 
 As a host, you can push your own repos into the `/~/<user>/...` namespace
@@ -52,7 +52,7 @@ The same binary is also the remote-control client and a git credential helper.
   recently used), `deny` (refuse new fetches), or `warn`. Self-hosted repos are
   never evicted by the budget.
 - Pinning: pinned mirrors are never evicted.
-- Token auth: SHA-256-hashed tokens with `fetch`, `push`, and `admin` levels;
+- Token auth: SHA-512-hashed tokens with `fetch`, `push`, and `admin` levels;
   auth can be required for everything, only for new/write actions, or disabled.
 - Remote control: an authenticated admin API (`/-/...`) and a self-service
   API for repo owners (`/+/...`), each with matching CLI verbs.

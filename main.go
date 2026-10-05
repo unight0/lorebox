@@ -1206,15 +1206,16 @@ func (config *Config) load(configFile string) {
 // newHandler constructs a new handler from config, path to document root, and
 // path to the git backend. It will call log.Fatalf() if it fails to parse
 // config.Disk.Max
-func newHandler(config *Config, root, backend Path) *handler {
+func newHandler(config *Config, backend Path) *handler {
 	maxDisk, err := parseDiskSize(config.Disk.Max)
 	if err != nil {
 		log.Fatalf("Error: could not parse '%s': %v\n", config.Disk.Max, err)
 	}
 
+	root := config.Root
 	h := &handler {
 		effectiveConfig: config,
-		root: root,
+		root: Path(root),
 		auth: config.Auth,
 		gitTimeout: config.Timeouts.Git.Regular.D(),	
 		gitCloneTimeout: config.Timeouts.Git.Clone.D(),
@@ -1227,9 +1228,9 @@ func newHandler(config *Config, root, backend Path) *handler {
 		allowPush: config.Push,
 		git: &cgi.Handler {
 			Path: backend.S(),
-			Dir: root.S(),
+			Dir: root,
 			Env: []string {
-				"GIT_PROJECT_ROOT=" + root.S(),
+				"GIT_PROJECT_ROOT=" + root,
 				"GIT_HTTP_EXPORT_ALL=1",
 			},
 		},
@@ -1280,6 +1281,18 @@ func (h *handler) launchRefresh() {
 		h.repos[r] = info
 		go h.refresher(ctx, r)
 	}
+}
+
+func (config *Config) getGitDir() string {
+	ctx, cancel := context.WithTimeout(context.Background(), config.Timeouts.Git.Regular.D())
+	defer cancel()
+	gitdir, err := exec.CommandContext(ctx, "git", "--exec-path").Output()
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return string(gitdir)
 }
 
 func main() {
@@ -1350,13 +1363,13 @@ func main() {
 		config.Listen = listen
 	}
 
-	config.check();
-
 	root, err := Path(config.Root).expand()
-
 	if err != nil {
 		log.Fatal(err)
 	}
+	config.Root = root.S()
+
+	config.check();
 
 	if err := os.MkdirAll(root.S(), 0700); err != nil {
 		log.Fatal(err)
@@ -1370,17 +1383,14 @@ func main() {
 	// Replace __LOREBOX_VERSION with fullSelfID()
 	processStaticPages()
 	
-	ctx, cancel := context.WithTimeout(context.Background(), config.Timeouts.Git.Regular.D())
-	defer cancel()
-	gitdir, err := exec.CommandContext(ctx, "git", "--exec-path").Output()
+	// Get the directory where git binaries are located
+	gitdir := config.getGitDir()
 
-	if err != nil {
-		log.Fatal(err)
-	}
+	log.Printf("Obtained git directory: %s\n", gitdir)
 
-	backend := NewPath(filepath.Join(strings.TrimSpace(string(gitdir)), "git-http-backend"))
+	backend := NewPath(filepath.Join(strings.TrimSpace(gitdir), "git-http-backend"))
 
-	h := newHandler(&config, root, backend)
+	h := newHandler(&config, backend)
 
 	tmpDir := h.tmpDir()
 	// Wipe

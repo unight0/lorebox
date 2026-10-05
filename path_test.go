@@ -121,7 +121,7 @@ func TestExpand(t *testing.T) {
 	//    dir2
 
 	// Path tested:
-	// /tmp/fakeRoot/dir2/../link1 === /tmp/fakeRoot/file1
+	// /tmp/fakeRoot/dir1/dir2/../link1 === /tmp/fakeRoot/file1
 
 	exp, err := NewPath(dir2).Concat("..").Concat(lnName).expand()
 	if err != nil {
@@ -132,4 +132,33 @@ func TestExpand(t *testing.T) {
 	"Path.expand() should expand symlinks and relative paths",
 	file1.Name(),
 	exp.S())
+}
+
+func TestIntraRepoPath(t *testing.T) {
+	h := makeTestHandler("/R/")
+	h.repos = make(map[Path]repoDescription)
+	h.repos[NewPath("/R/repo1/")] = repoDescription{}
+	h.repos[NewPath("/R/repo2/")] = repoDescription{}
+	h.repos[NewPath("/R/repo3/")] = repoDescription{}
+
+	for p := range h.repos {
+		irp, s := p.Concat("path/in/repo/").intraRepoPath(h)
+		if !s {
+			t.Errorf("%s should have something to chop", irp.S())
+		}
+		assertEq(t,
+		"Path.intraRepoPath() should yield a path inside a repo",
+		"/path/in/repo",
+		irp.S())
+	}
+
+	irp, s := NewPath("/repo1/path/in/repo/").intraRepoPath(h)
+	if s {
+		t.Errorf("%s should not have anything to chop", irp.S())
+	}
+
+	irp, s = NewPath("/repo2/path/in/repo/").intraRepoPath(h)
+	if s {
+		t.Errorf("%s should not have anything to chop", irp.S())
+	}
 }

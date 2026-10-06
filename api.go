@@ -1,7 +1,6 @@
 package main
 
 import (
-	//"bufio"
 	"net/http"
 	"fmt"
 	"log"

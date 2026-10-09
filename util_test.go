@@ -117,3 +117,33 @@ func TestParseSelfHosted(t *testing.T) {
 		})
 	}
 }
+
+func TestParseDiskSize(t *testing.T) {
+	testCases := []struct {
+		size string
+		res int64
+		err bool
+	} {
+		{"1024", 1024, false},
+		{"1024K", 1024 * 1024, false},
+		{"1024M", 1024 * 1024 * 1024, false},
+		{"1024G", 1024 * 1024 * 1024 * 1024, false},
+		{"1024X", 0, true},
+		{"X1024X", 0, true},
+		{"X1024XG", 0, true},
+		{"X1024G", 0, true},
+		{"G", 0, true},
+		{"M", 0, true},
+		{"K", 0, true},
+		{"", 0, true},
+	}
+	for _, tc := range testCases {
+		t.Run(fmt.Sprintf("Test(%s):%d,%t", tc.size, tc.res, tc.err), func(t *testing.T) {
+			res, err := parseDiskSize(tc.size)
+			haveErr := err != nil
+			if (res != tc.res || haveErr != tc.err) {
+				t.Errorf("parseDiskSize(%s) should return %d, haveErr=%t", tc.size, tc.res, tc.err)
+			}
+		})
+	}
+}

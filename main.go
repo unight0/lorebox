@@ -62,6 +62,10 @@ type repoDescription struct {
 	cancelRefresher func()
 }
 
+// refreshDefaultBranch attempts to fetch the information about the default
+// branch from upstream. If errors occur, they are logged into logg and false is
+// returned. True is returned on success. It is non-critical to the refresh
+// process if this does not succeed.
 func (h *handler) refreshDefaultBranch(path Path, logg *log.Logger) bool {
 	git := gitRunner{path, h.gitTimeout, logg.Writer()}
 
@@ -109,6 +113,9 @@ func (h *handler) refreshDefaultBranch(path Path, logg *log.Logger) bool {
 //	return repos
 //}
 
+// refreshRepo attempts to fetch and cache changes from the upstream git
+// repository. If successfull, it refreshRepo returns true. Otherwise, false is
+// returned and errors are logged to logg.
 func (h *handler) refreshRepo(path Path, logg *log.Logger) bool {
 	repo := path.RepoPath(h)
 
@@ -132,6 +139,10 @@ func (h *handler) refreshRepo(path Path, logg *log.Logger) bool {
 	return h.applyDiskUsagePolicy(logg) && updRes
 }
 
+// evictRepo checks that repo exists and is not pinned. Then it deletes the
+// directory tree of the repo and stops its respective refresher goroutine. On
+// success, true is returned. Otherwise, errors are logged to logg and the
+// return value is false.
 func (h *handler) evictRepo(repo RepoPath, logg *log.Logger) bool {
 
 	path := repo.Path(h)
@@ -189,6 +200,8 @@ func (h *handler) configureNewRepo(path Path, logg *log.Logger) bool {
 	return true
 }
 
+// dirSize walks the directory at path and tries to calculate the total size of
+// all items inside the directory tree.
 func dirSize(path Path) (size int64, err error) {
 	err = filepath.WalkDir(path.S(), func(_ string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -211,6 +224,8 @@ func dirSize(path Path) (size int64, err error) {
 	return
 }
 
+// totalRepoSize sums up the sizes of all repos. Important: this function does
+// not lock h.reposLock, so that must be handled on the outside.
 func (h *handler) totalRepoSize() (size int64) {
 	for _, d := range h.repos {
 		size += d.size
@@ -218,16 +233,25 @@ func (h *handler) totalRepoSize() (size int64) {
 	return
 }
 
+// diskUsageExceeded reports if the current disk usage exceeds the set disk
+// usage limit. Important: this function locks h.reposLock for reading.
 func (h *handler) diskUsageExceeded() bool {
 	h.reposLock.RLock()
 	defer h.reposLock.RUnlock()
 	return h.totalRepoSize() >= h.maxDiskUsage
 }
 
+// diskUsageExceededLocked reports if the current disk usage exceeds the set
+// disk usage limit. Important: this function does NOT lock h.reposLock.
 func (h *handler) diskUsageExceededLocked() bool {
 	return h.totalRepoSize() >= h.maxDiskUsage
 }
 
+// LRU implements the Least Recently Used repository cache eviction policy.
+// LRU() does not evict self-hosted and pinned repositories. It reports pinned
+// and evicted repositories to logg. If only pinned and self-hosted repositories
+// are left, but disk usage still exceeds the limit, LRU returns false.
+// Otherwise it returns true.
 func (h *handler) LRU(logg *log.Logger) bool {
 	h.reposLock.Lock()
 	defer h.reposLock.Unlock()
@@ -282,13 +306,15 @@ func (h *handler) LRU(logg *log.Logger) bool {
 	}
 
 	if h.diskUsageExceededLocked() {
-		logg.Printf("Disk usage is exceeded, but only pinned repos are left")
+		logg.Printf("Disk usage is exceeded, but only pinned or self-hosted repos are left")
 		return false
 	}
 
 	return true
 }
 
+// readAccess reads the modification time of path/lorebox.access file. If an
+// error occurs, it reports it to logg and returns time.Now().
 func readAccess(path Path, logg *log.Logger) time.Time {
 	accPath := path.Concat("lorebox.access").S()
 
@@ -303,6 +329,8 @@ func readAccess(path Path, logg *log.Logger) time.Time {
 }
 
 
+// recordAccess tries to update modification time on path/lorebox.access. If the
+// file does not exist, it is created.
 func recordAccess(path Path, logg *log.Logger) {
 	accPath := path.Concat("lorebox.access").S()
 
@@ -325,6 +353,10 @@ func recordAccess(path Path, logg *log.Logger) {
 	}
 }
 
+// applyDiskUsagePolicy applies the disk usage policy as defined by
+// h.diskUsagePolicy, which must be either "deny", "warn", or "lru". Any other
+// value of h.diskUsagePolicy will cause a panic. The function returns true on
+// success and false otherwise.
 func (h *handler) applyDiskUsagePolicy(logg *log.Logger) bool {
 	if h.diskUsageExceeded() {
 		logg.Printf("Max disk usage exceeded")
@@ -342,6 +374,10 @@ func (h *handler) applyDiskUsagePolicy(logg *log.Logger) bool {
 	return true
 }
 
+// fetchRepo attempts to fetch a repo for the first time, register it in
+// h.repos, and launch a refresher goroutine. fetchRepo ensures single-flight,
+// meaning that it will only be launched once for one repo, even if called
+// simultaneously. True is returned on success and false otherwise.
 func (h *handler) fetchRepo(repo RepoPath, logg *log.Logger, scheme string) bool {
 
 	success, _, _ := h.fetchGroup.Do(repo.S(), func() (any, error) {
@@ -1155,6 +1191,8 @@ func defaultConfig() Config {
 	return config
 }
 
+// check performs some sanity checks on the values supplied in the server config
+// file.
 func (config *Config) check() {
 	if config.Timeouts.Refresh.Jitter.Max < config.Timeouts.Refresh.Jitter.Min {
 		log.Fatal("Error: min jitter > max jitter")
@@ -1187,6 +1225,8 @@ func (config *Config) check() {
 	}
 }
 
+// load attempts to unmarshal the contents of configFile as a YAML server
+// config. It logs a fatal error if it fails.
 func (config *Config) load(configFile string) {
 	var configData []byte
 	var err error
@@ -1283,6 +1323,8 @@ func (h *handler) launchRefresh() {
 	}
 }
 
+// getGitDir attempts to find the git executables path, equivalent to `git
+// --exec-path`. It logs a fatal error if it fails.
 func (config *Config) getGitDir() string {
 	ctx, cancel := context.WithTimeout(context.Background(), config.Timeouts.Git.Regular.D())
 	defer cancel()

@@ -112,7 +112,7 @@ func fullSelfID() string {
 // K = kilobytes (1024 bytes), M = megabytes (1024 * 1024 bytes), G = gigabytes
 // = (1024 * 1024 * 1024 bytes), and no postfix = bytes. Invalid format returns
 // (0, error), valid format returns (X, nil).
-// Maybe rework this later
+// Maybe rework this later.
 func parseDiskSize(size string) (int64, error) {
 	if hasPostfix(size, "G") {
 		giga, err := strconv.Atoi(size[:len(size)-1])
